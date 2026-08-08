@@ -1,0 +1,23 @@
+info:
+  name: Conversation
+  type: http
+  seq: 8
+
+http:
+  method: POST
+  url: http://localhost:5000/api/conversations
+  body:
+    type: json
+    data: |-
+      {
+          "receiverId": "6a75e34d8791bb06d900cb70"
+      }
+  auth:
+    type: bearer
+    token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjZhNzVlNTE1ODc5MWJiMDZkOTAwY2I3MyIsImlhdCI6MTc4NjExNDA1NSwiZXhwIjoxNzg2NzE4ODU1fQ.6HSwPSR2XSBt-nREvB3KVMhyPD8Lh0Cqt5046iRcgwc
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
