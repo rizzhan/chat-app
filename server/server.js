@@ -11,7 +11,7 @@ const userRoutes = require("./routes/userRoutes");
 const conversationRoutes = require("./routes/conversationRoutes");
 const messageRoutes = require("./routes/messagesRoutes");
 
-connectDB();
+const { notFound, errorHandler } = require("./middleware/errormiddleware");
 
 const app = express();
 const server = http.createServer(app);
@@ -29,8 +29,14 @@ app.get("/", (req, res) => {
   res.send("Hello from the server!");
 });
 
+app.use(notFound);
+app.use(errorHandler);
+
 const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, () => {
+// Wait for the database before starting the server
+connectDB().then(() => {
+  server.listen(PORT, () => {
     console.log(`Server running on ${PORT}`);
+  });
 });

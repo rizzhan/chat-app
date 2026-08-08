@@ -1,11 +1,11 @@
 info:
-  name: Get Conversations
+  name: Get all users
   type: http
-  seq: 8
+  seq: 5
 
 http:
   method: GET
-  url: http://localhost:5000/api/conversations
+  url: http://localhost:5000/api/users
   auth:
     type: bearer
     token: "{{token}}"

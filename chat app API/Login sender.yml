@@ -1,20 +1,27 @@
 info:
-  name: sender
+  name: Login sender
   type: http
-  seq: 6
+  seq: 3
 
 http:
   method: POST
-  url: http://localhost:5000/api/auth/register
+  url: http://localhost:5000/api/auth/login
   body:
     type: json
     data: |-
       {
-        "username": "Rishan",
         "email": "rishan@example.com",
         "password": "123456"
       }
-  auth: inherit
+  auth: none
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body.token) {
+          bru.setVar("token", res.body.token);
+        }
 
 settings:
   encodeUrl: true

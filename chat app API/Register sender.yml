@@ -1,7 +1,7 @@
 info:
-  name: receiver
+  name: Register sender
   type: http
-  seq: 7
+  seq: 1
 
 http:
   method: POST
@@ -10,11 +10,11 @@ http:
     type: json
     data: |-
       {
-        "username": "Alex",
-        "email": "alex@example.com",
+        "username": "Rishan",
+        "email": "rishan@example.com",
         "password": "123456"
       }
-  auth: inherit
+  auth: none
 
 settings:
   encodeUrl: true

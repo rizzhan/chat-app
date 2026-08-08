@@ -1,0 +1,31 @@
+info:
+  name: Create Conversation
+  type: http
+  seq: 7
+
+http:
+  method: POST
+  url: http://localhost:5000/api/conversations
+  body:
+    type: json
+    data: |-
+      {
+        "receiverId": "PASTE_ALEXS_USER_ID_HERE"
+      }
+  auth:
+    type: bearer
+    token: "{{token}}"
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body._id) {
+          bru.setVar("conversationId", res.body._id);
+        }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

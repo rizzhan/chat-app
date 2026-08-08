@@ -1,20 +1,20 @@
 info:
-  name: LOGIN (sender)
+  name: Register receiver
   type: http
-  seq: 3
+  seq: 2
 
 http:
   method: POST
-  url: http://localhost:5000/api/auth/login
+  url: http://localhost:5000/api/auth/register
   body:
     type: json
     data: |-
       {
-        "username": "Rishan",
-        "email": "rishan@example.com",
+        "username": "Alex",
+        "email": "alex@example.com",
         "password": "123456"
       }
-  auth: inherit
+  auth: none
 
 settings:
   encodeUrl: true

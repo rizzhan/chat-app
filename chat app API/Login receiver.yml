@@ -1,7 +1,7 @@
 info:
-  name: LOGIN (receiver)
+  name: Login receiver
   type: http
-  seq: 5
+  seq: 4
 
 http:
   method: POST
@@ -10,11 +10,18 @@ http:
     type: json
     data: |-
       {
-        "username": "Alex",
-        "email": "Alex@example.com",
+        "email": "alex@example.com",
         "password": "123456"
       }
-  auth: inherit
+  auth: none
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body.token) {
+          bru.setVar("token", res.body.token);
+        }
 
 settings:
   encodeUrl: true
