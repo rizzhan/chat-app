@@ -29,6 +29,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    // User IDs this user has blocked
+    blocked: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
   },
   {
     timestamps: true,

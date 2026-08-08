@@ -2,9 +2,9 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const Message = require("../models/messages");
 const Conversation = require("../models/conversation");
+const { isBlockedPair } = require("../utils/blocked");
 
-// Map of userId -> socketId for online users
-const onlineUsers = new Map();
+const { onlineUsers, lastSeen } = require("./state");
 
 const initSocket = (server) => {
   const io = new Server(server, {
@@ -51,13 +51,49 @@ const initSocket = (server) => {
       console.log(`User ${userId} joined conversation ${conversationId}`);
     });
 
+    // User started typing in a conversation (broadcast to everyone else there)
+    socket.on("typing", ({ conversationId }) => {
+      if (!conversationId) return;
+      socket
+        .to(conversationId)
+        .emit("user-typing", { conversationId, userId });
+    });
+
+    // User stopped typing
+    socket.on("stop-typing", ({ conversationId }) => {
+      if (!conversationId) return;
+      socket
+        .to(conversationId)
+        .emit("user-stop-typing", { conversationId, userId });
+    });
+
     // Send a message through Socket.IO
     socket.on("send-message", async (data, callback) => {
       try {
-        const { conversationId, text } = data || {};
+        const {
+          conversationId,
+          text = "",
+          type = "text",
+          file = null,
+        } = data || {};
 
-        if (!conversationId || !text || !text.trim()) {
-          if (callback) callback({ error: "conversationId and text are required" });
+        if (!conversationId) {
+          if (callback) callback({ error: "conversationId is required" });
+          return;
+        }
+
+        const trimmedText = typeof text === "string" ? text.trim() : "";
+        const hasText = trimmedText.length > 0;
+        const hasFile = file && file.url;
+        const isTextType = type === "text";
+
+        if (!hasText && !hasFile) {
+          if (callback) callback({ error: "Message content is required" });
+          return;
+        }
+
+        if (isTextType && !hasText) {
+          if (callback) callback({ error: "Message text is required" });
           return;
         }
 
@@ -72,11 +108,25 @@ const initSocket = (server) => {
           return;
         }
 
+        // If this is a 1-to-1 chat, block messages from a user who is blocked
+        if (conversation.type === "private") {
+          const otherId = conversation.participants.find(
+            (p) => p.toString() !== userId
+          );
+          if (otherId && (await isBlockedPair(userId, otherId))) {
+            if (callback)
+              callback({ error: "You cannot send messages to this user" });
+            return;
+          }
+        }
+
         // Save the message to MongoDB
         const message = await Message.create({
           conversationId,
           sender: userId,
-          text: text.trim(),
+          text: trimmedText,
+          type: isTextType ? "text" : type,
+          ...(file ? { file } : {}),
         });
 
         // Update the conversation's last message
@@ -100,6 +150,31 @@ const initSocket = (server) => {
       }
     });
 
+    // Mark messages as read in real time (when the reader is already viewing)
+    socket.on("read-messages", async (conversationId) => {
+      if (!conversationId) return;
+
+      try {
+        const result = await Message.updateMany(
+          {
+            conversationId,
+            sender: { $ne: userId },
+            readBy: { $ne: userId },
+          },
+          { $addToSet: { readBy: userId } }
+        );
+
+        if (result.modifiedCount > 0) {
+          io.to(conversationId).emit("messages-read", {
+            conversationId,
+            readerId: userId,
+          });
+        }
+      } catch (error) {
+        console.error("Socket read-messages error:", error);
+      }
+    });
+
     // Leave a conversation room
     socket.on("leave-conversation", (conversationId) => {
       if (!conversationId) return;
@@ -110,9 +185,14 @@ const initSocket = (server) => {
     // User disconnect
     socket.on("disconnect", () => {
       onlineUsers.delete(userId);
+      lastSeen.set(userId, Date.now());
 
-      // Tell every client who went offline
+      // Tell every client who went offline, and when
       io.emit("online-users", Array.from(onlineUsers.keys()));
+      io.emit("user-offline", {
+        userId,
+        lastSeen: lastSeen.get(userId),
+      });
 
       console.log("User disconnected:", userId);
     });
