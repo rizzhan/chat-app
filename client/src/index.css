@@ -1502,7 +1502,7 @@ input {
 }
 
 .chat-menu button:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 55%, white);
 }
 
 .chat-menu button.conv-menu-danger {
@@ -1639,6 +1639,8 @@ input {
 .tick {
   font-size: 12px;
   opacity: 0.7;
+  letter-spacing: -2px;
+  padding-right: 2px;
 }
 
 .tick.read {
@@ -1713,7 +1715,7 @@ input {
 }
 
 .message-menu button:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 55%, white);
 }
 
 .message-menu button.danger {
@@ -2497,7 +2499,7 @@ img.avatar {
 }
 
 .conv-menu button:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 55%, white);
 }
 
 .conv-menu button.conv-menu-danger {
@@ -2970,6 +2972,17 @@ mark {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chatlock-row {
+  flex-wrap: wrap;
+}
+
+.chatlock-actions {
+  display: flex;
+  gap: 8px;
+  flex-basis: 100%;
+  justify-content: center;
 }
 
 .settings-status {

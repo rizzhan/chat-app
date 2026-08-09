@@ -5027,7 +5027,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             </div>
             <div className="settings-section">
               <div className="settings-label">Privacy</div>
-              <div className="settings-row">
+              <div className="settings-row chatlock-row">
                 <div className="settings-sub">
                   <div>Chat lock (PIN)</div>
                   <div>
@@ -5037,7 +5037,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   </div>
                 </div>
                 {hasPin ? (
-                  <>
+                  <div className="chatlock-actions">
                     <button className="mini-button" onClick={lockNow}>
                       Lock now
                     </button>
@@ -5050,7 +5050,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     >
                       Remove
                     </button>
-                  </>
+                  </div>
                 ) : (
                   <button className="mini-button" onClick={setChatPin}>
                     Set PIN
