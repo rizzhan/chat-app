@@ -48,8 +48,21 @@ const enrich = (conversations, unreadMap = {}, userId) =>
       online: onlineUsers.has(p._id.toString()),
       lastSeen: lastSeen.get(p._id.toString()) || null,
     }));
+
+    obj.isOwner = obj.admin ? obj.admin.toString() === uid : false;
+    obj.isAdmin =
+      obj.isOwner ||
+      (obj.admins || []).some((a) => a.toString() === uid);
+
     return obj;
   });
+
+// Group role helpers
+const isOwner = (c, id) => !!c.admin && c.admin.toString() === String(id);
+const isParticipant = (c, id) =>
+  (c.participants || []).some((p) => p.toString() === String(id));
+const isAdminUser = (c, id) =>
+  isOwner(c, id) || (c.admins || []).some((a) => a.toString() === String(id));
 
 // Count unread messages per conversation for a user
 const getUnreadMap = async (conversationIds, userId) => {
@@ -104,7 +117,7 @@ router.post("/", authMiddleware, async (req, res, next) => {
       type: "private",
       participants: { $all: [req.user.id, receiverId] },
     })
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     if (existing) {
@@ -116,7 +129,7 @@ router.post("/", authMiddleware, async (req, res, next) => {
     });
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.status(201).json(enrich([populated], {}, req.user.id)[0]);
@@ -159,7 +172,7 @@ router.post("/group", authMiddleware, async (req, res, next) => {
     });
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.status(201).json(enrich([populated], {}, req.user.id)[0]);
@@ -174,7 +187,7 @@ router.get("/", authMiddleware, async (req, res, next) => {
     const conversations = await Conversation.find({
       participants: req.user.id,
     })
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage")
       .sort({ updatedAt: -1 });
 
@@ -196,7 +209,7 @@ router.get("/:conversationId", authMiddleware, async (req, res, next) => {
       _id: req.params.conversationId,
       participants: req.user.id,
     })
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     if (!conversation) {
@@ -245,8 +258,12 @@ router.post("/:conversationId/members", authMiddleware, async (req, res, next) =
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
+
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
 
     res.json(enrich([populated], {}, req.user.id)[0]);
   } catch (error) {
@@ -254,7 +271,10 @@ router.post("/:conversationId/members", authMiddleware, async (req, res, next) =
   }
 });
 
-// Remove a member from a group (admin can remove anyone, members can leave)
+// Remove a member from a group
+// - Any member can leave themselves
+// - Admins / owner can remove regular members
+// - The owner leaving hands ownership to another admin/member first
 router.delete("/:conversationId/members/:userId", authMiddleware, async (req, res, next) => {
   try {
     const conversation = await Conversation.findById(req.params.conversationId);
@@ -267,21 +287,231 @@ router.delete("/:conversationId/members/:userId", authMiddleware, async (req, re
       return res.status(400).json({ message: "Not a group conversation" });
     }
 
-    const isSelf = req.params.userId === req.user.id;
-    const isAdmin = conversation.admin?.toString() === req.user.id;
+    const targetId = req.params.userId;
+    const isSelf = targetId === req.user.id;
+    const targetIsOwner = isOwner(conversation, targetId);
+    const targetIsAdmin = isAdminUser(conversation, targetId);
 
-    if (!isSelf && !isAdmin) {
-      return res.status(403).json({
-        message: "Only the admin or the member themselves can do this",
+    if (!isParticipant(conversation, targetId)) {
+      return res.status(400).json({ message: "Not a member" });
+    }
+
+    if (!isSelf) {
+      // Removing someone else requires owner or admin
+      if (!isAdminUser(conversation, req.user.id)) {
+        return res.status(403).json({
+          message: "Only group admins can remove members",
+        });
+      }
+
+      // Admins cannot remove the owner or other admins
+      if (targetIsOwner || targetIsAdmin) {
+        return res.status(403).json({
+          message: "You cannot remove the owner or another admin",
+        });
+      }
+    }
+
+    // Leaving admins lose their admin status
+    conversation.admins = (conversation.admins || []).filter(
+      (a) => a.toString() !== targetId
+    );
+
+    conversation.participants = conversation.participants.filter(
+      (p) => p.toString() !== targetId
+    );
+
+    // If the owner left, hand ownership to the first admin / member
+    if (targetIsOwner) {
+      const nextOwner =
+        (conversation.admins && conversation.admins[0]) ||
+        conversation.participants[0];
+      conversation.admin = nextOwner || null;
+      if (nextOwner) {
+        conversation.admins = (conversation.admins || []).filter(
+          (a) => a.toString() !== nextOwner.toString()
+        );
+      }
+    }
+
+    await conversation.save();
+
+    // Kick the removed user out of the socket room and tell them
+    const removedSocketId = onlineUsers.get(targetId);
+    if (removedSocketId) {
+      const removedSocket = req.io?.sockets.sockets.get(removedSocketId);
+      removedSocket?.leave(conversation._id.toString());
+      req.io?.to(removedSocketId).emit("removed-from-group", {
+        conversationId: conversation._id.toString(),
       });
     }
 
-    conversation.participants = conversation.participants.filter(
-      (p) => p.toString() !== req.params.userId
-    );
-    await conversation.save();
+    // Tell everyone still in the group that its info changed
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
 
     res.json({ message: "Member removed" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Rename a group (owner or admin)
+router.put("/:conversationId/name", authMiddleware, async (req, res, next) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: "Group name is required" });
+    }
+
+    const conversation = await Conversation.findById(req.params.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (conversation.type !== "group") {
+      return res.status(400).json({ message: "Not a group conversation" });
+    }
+
+    if (!isAdminUser(conversation, req.user.id)) {
+      return res.status(403).json({
+        message: "Only group admins can rename the group",
+      });
+    }
+
+    conversation.name = name.trim();
+    await conversation.save();
+
+    const populated = await Conversation.findById(conversation._id)
+      .populate("participants", "username avatar handle status")
+      .populate("lastMessage");
+
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
+
+    res.json(enrich([populated], {}, req.user.id)[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Promote or demote an admin (owner only)
+router.post("/:conversationId/admins", authMiddleware, async (req, res, next) => {
+  try {
+    const { userId, action } = req.body;
+    const conversation = await Conversation.findById(req.params.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (conversation.type !== "group") {
+      return res.status(400).json({ message: "Not a group conversation" });
+    }
+
+    if (!isOwner(conversation, req.user.id)) {
+      return res.status(403).json({
+        message: "Only the group owner can change admins",
+      });
+    }
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    if (!isParticipant(conversation, userId)) {
+      return res.status(400).json({ message: "User is not a member" });
+    }
+
+    if (isOwner(conversation, userId)) {
+      return res.status(400).json({ message: "The owner is already the group owner" });
+    }
+
+    conversation.admins = conversation.admins || [];
+
+    if (action === "promote") {
+      if (conversation.admins.some((a) => a.toString() === userId)) {
+        return res.status(400).json({ message: "Already an admin" });
+      }
+      conversation.admins.push(userId);
+    } else if (action === "demote") {
+      conversation.admins = conversation.admins.filter(
+        (a) => a.toString() !== userId
+      );
+    } else {
+      return res.status(400).json({ message: "action must be promote or demote" });
+    }
+
+    await conversation.save();
+
+    const populated = await Conversation.findById(conversation._id)
+      .populate("participants", "username avatar handle status")
+      .populate("lastMessage");
+
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
+
+    res.json(enrich([populated], {}, req.user.id)[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Transfer group ownership (owner only; old owner stays as an admin)
+router.post("/:conversationId/transfer", authMiddleware, async (req, res, next) => {
+  try {
+    const { userId } = req.body;
+    const conversation = await Conversation.findById(req.params.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (conversation.type !== "group") {
+      return res.status(400).json({ message: "Not a group conversation" });
+    }
+
+    if (!isOwner(conversation, req.user.id)) {
+      return res.status(403).json({
+        message: "Only the group owner can transfer ownership",
+      });
+    }
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    if (!isParticipant(conversation, userId)) {
+      return res.status(400).json({ message: "User is not a member" });
+    }
+
+    if (isOwner(conversation, userId)) {
+      return res.status(400).json({ message: "That user already owns the group" });
+    }
+
+    // New owner takes over; previous owner keeps admin rights
+    conversation.admins = (conversation.admins || []).filter(
+      (a) => a.toString() !== userId
+    );
+    conversation.admins.push(req.user.id);
+    conversation.admin = userId;
+
+    await conversation.save();
+
+    const populated = await Conversation.findById(conversation._id)
+      .populate("participants", "username avatar handle status")
+      .populate("lastMessage");
+
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
+
+    res.json(enrich([populated], {}, req.user.id)[0]);
   } catch (error) {
     next(error);
   }
@@ -311,7 +541,7 @@ const toggleFlag = async (req, res, next, field) => {
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.json(enrich([populated], {}, req.user.id)[0]);
@@ -389,7 +619,7 @@ router.post("/:conversationId/theme", authMiddleware, async (req, res, next) => 
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.json(enrich([populated], {}, req.user.id)[0]);
@@ -424,7 +654,7 @@ router.post("/:conversationId/background", authMiddleware, async (req, res, next
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.json(enrich([populated], {}, req.user.id)[0]);
@@ -467,7 +697,7 @@ router.post("/:conversationId/mute", authMiddleware, async (req, res, next) => {
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.json(enrich([populated], {}, req.user.id)[0]);
@@ -477,8 +707,7 @@ router.post("/:conversationId/mute", authMiddleware, async (req, res, next) => {
 });
 
 // Unmute notifications for this chat
-router.post("/:conversationId/unmute", authMiddleware, async (req, res, next) => {
-  try {
+router.post("/:conversationId/unmute", authMiddleware, async (req, res, next) => {  try {
     const conversation = await Conversation.findOne({
       _id: req.params.conversationId,
       participants: req.user.id,
@@ -494,7 +723,7 @@ router.post("/:conversationId/unmute", authMiddleware, async (req, res, next) =>
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)
-      .populate("participants", "username avatar email")
+      .populate("participants", "username avatar handle status")
       .populate("lastMessage");
 
     res.json(enrich([populated], {}, req.user.id)[0]);
@@ -502,5 +731,62 @@ router.post("/:conversationId/unmute", authMiddleware, async (req, res, next) =>
     next(error);
   }
 });
+
+// Turn disappearing messages on/off for a chat (0 = off, otherwise seconds)
+router.post(
+  "/:conversationId/disappear",
+  authMiddleware,
+  async (req, res, next) => {
+    try {
+      const { seconds } = req.body;
+      const valid = [0, 86400, 604800, 7776000]; // off, 24h, 7d, 90d
+
+      if (!valid.includes(Number(seconds))) {
+        return res.status(400).json({ message: "Invalid disappearing time" });
+      }
+
+      const conversation = await Conversation.findOne({
+        _id: req.params.conversationId,
+        participants: req.user.id,
+      });
+
+      if (!conversation) {
+        return res.status(404).json({ message: "Conversation not found" });
+      }
+
+      conversation.disappearTime = Number(seconds);
+      await conversation.save();
+
+      const convId = conversation._id.toString();
+
+      if (Number(seconds) > 0) {
+        // Give existing messages an expiry too, so everything disappears.
+        const expiry = new Date(Date.now() + Number(seconds) * 1000);
+        await Message.updateMany(
+          { conversationId: convId, expiresAt: null },
+          { expiresAt: expiry }
+        );
+      } else {
+        await Message.updateMany({ conversationId: convId }, { expiresAt: null });
+      }
+
+      // Tell the other participants so their header shows the new setting
+      if (req.io) {
+        req.io.to(convId).emit("conversation-disappear", {
+          conversationId: convId,
+          disappearTime: conversation.disappearTime,
+        });
+      }
+
+      const populated = await Conversation.findById(conversation._id)
+        .populate("participants", "username avatar handle status")
+        .populate("lastMessage");
+
+      res.json(enrich([populated], {}, req.user.id)[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

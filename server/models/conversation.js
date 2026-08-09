@@ -16,12 +16,21 @@ const conversationSchema = new mongoose.Schema(
             default: "",
         },
 
-        // Who created the group (can remove members)
+        // Who created the group (can remove members / change admins)
         admin: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             default: null,
         },
+
+        // Additional group admins (the owner is stored in `admin`).
+        // Admins can rename the group and remove regular members.
+        admins: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "User",
+            },
+        ],
 
         participants: [
             {
@@ -92,6 +101,13 @@ const conversationSchema = new mongoose.Schema(
                 url: { type: String, default: "" },
             },
         ],
+
+        // Disappearing messages: 0 = off, otherwise lifetime in seconds
+        // (e.g. 86400 = 24 hours, 604800 = 7 days, 7776000 = 90 days)
+        disappearTime: {
+            type: Number,
+            default: 0,
+        },
     },
     {
         timestamps: true,

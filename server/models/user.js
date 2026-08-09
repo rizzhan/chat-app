@@ -19,6 +19,25 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Unique handle (@username) used to find people. Auto-generated at signup.
+    // sparse: accounts created before handles existed have no handle field.
+    handle: {
+      type: String,
+      unique: true,
+      sparse: true,
+      lowercase: true,
+      trim: true,
+      default: "",
+    },
+
+    // Short profile status shown next to the user's name.
+    status: {
+      type: String,
+      default: "",
+      maxlength: 100,
+      trim: true,
+    },
+
     password: {
       type: String,
       required: [true, "Password is required"],

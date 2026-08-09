@@ -4,6 +4,7 @@ import api from "./api";
 function AuthPage({ onAuth }) {
   const [mode, setMode] = useState("login"); // "login" or "register"
   const [username, setUsername] = useState("");
+  const [handle, setHandle] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -26,7 +27,7 @@ function AuthPage({ onAuth }) {
       const body =
         mode === "login"
           ? { email, password }
-          : { username, email, password };
+          : { username, email, password, handle };
 
       const res = await api.post(url, body);
 
@@ -61,6 +62,16 @@ function AuthPage({ onAuth }) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
+            />
+          )}
+
+          {mode === "register" && (
+            <input
+              className="auth-input"
+              type="text"
+              placeholder="Handle (optional, e.g. @coolguy)"
+              value={handle}
+              onChange={(e) => setHandle(e.target.value)}
             />
           )}
 

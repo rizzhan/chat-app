@@ -118,7 +118,10 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
                 onClick={() => toggle(u)}
               >
                 <Avatar user={u} small />
-                <span className="modal-user-name">{u.username}</span>
+                <span className="modal-user-name">
+                  {u.username}
+                  {u.handle && <span className="user-handle"> @{u.handle}</span>}
+                </span>
                 <span>{isSel ? "✓" : "+"}</span>
               </button>
             );

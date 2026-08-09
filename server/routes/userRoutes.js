@@ -32,6 +32,71 @@ router.post(
   }
 );
 
+// Update the current user's profile (username, handle, status).
+// Email is deliberately not editable here (and never exposed publicly).
+router.patch("/me", authMiddleware, async (req, res, next) => {
+  try {
+    const { username, handle, status } = req.body;
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (username !== undefined) {
+      const uname = String(username).trim();
+      if (uname.length < 3 || uname.length > 20) {
+        return res.status(400).json({
+          message: "Username must be between 3 and 20 characters",
+        });
+      }
+      const taken = await User.findOne({
+        username: uname,
+        _id: { $ne: user._id },
+      });
+      if (taken) {
+        return res.status(400).json({ message: "Username already taken" });
+      }
+      user.username = uname;
+    }
+
+    if (handle !== undefined) {
+      const h = String(handle).trim().replace(/^@/, "").toLowerCase();
+      if (h) {
+        if (!/^[a-z0-9_]{3,20}$/.test(h)) {
+          return res.status(400).json({
+            message: "Handle must be 3-20 characters (letters, numbers, _)",
+          });
+        }
+        const taken = await User.findOne({
+          handle: h,
+          _id: { $ne: user._id },
+        });
+        if (taken) {
+          return res.status(400).json({ message: "Handle already taken" });
+        }
+        user.handle = h;
+      } else {
+        user.handle = "";
+      }
+    }
+
+    if (status !== undefined) {
+      const s = String(status).trim();
+      if (s.length > 100) {
+        return res
+          .status(400)
+          .json({ message: "Status must be 100 characters or less" });
+      }
+      user.status = s;
+    }
+
+    await user.save();
+    res.json(await User.findById(user._id).select("-password"));
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Protected profile route
 router.get("/profile", authMiddleware, (req, res) => {
   res.json({
@@ -40,7 +105,7 @@ router.get("/profile", authMiddleware, (req, res) => {
   });
 });
 
-// Search users by username (must be defined before /:id)
+// Search users by username or handle (must be defined before /:id)
 router.get("/search", authMiddleware, async (req, res, next) => {
   try {
     const { username } = req.query;
@@ -51,11 +116,17 @@ router.get("/search", authMiddleware, async (req, res, next) => {
       });
     }
 
+    const term = username.trim();
+    const handleTerm = term.replace(/^@/, "");
+
     const users = await User.find({
-      username: { $regex: username.trim(), $options: "i" },
+      $or: [
+        { username: { $regex: term, $options: "i" } },
+        { handle: { $regex: handleTerm, $options: "i" } },
+      ],
       _id: { $ne: req.user.id },
     })
-      .select("-password")
+      .select("username avatar handle status")
       .limit(20);
 
     res.json(users);
@@ -120,7 +191,7 @@ router.get("/blocked", authMiddleware, async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id).populate(
       "blocked",
-      "username avatar email"
+      "username avatar handle status"
     );
 
     res.json(user?.blocked || []);
@@ -170,7 +241,7 @@ router.post("/:id/unblock", authMiddleware, async (req, res, next) => {
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
     const users = await User.find({ _id: { $ne: req.user.id } }).select(
-      "-password"
+      "username avatar handle status"
     );
 
     res.json(users);
@@ -179,10 +250,12 @@ router.get("/", authMiddleware, async (req, res, next) => {
   }
 });
 
-// Get user by ID
+// Get user by ID (public view - email is never exposed)
 router.get("/:id", authMiddleware, async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select("-password");
+    const user = await User.findById(req.params.id).select(
+      "username avatar handle status"
+    );
 
     if (!user) {
       return res.status(404).json({

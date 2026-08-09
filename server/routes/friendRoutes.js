@@ -56,8 +56,8 @@ router.get("/", authMiddleware, async (req, res, next) => {
       status: "accepted",
       $or: [{ requester: req.user.id }, { recipient: req.user.id }],
     })
-      .populate("requester", "username avatar email")
-      .populate("recipient", "username avatar email");
+      .populate("requester", "username avatar handle status")
+      .populate("recipient", "username avatar handle status");
 
     const result = friends.map((f) => {
       const mine = f.requester._id.toString() === req.user.id;
@@ -79,7 +79,7 @@ router.get("/requests", authMiddleware, async (req, res, next) => {
     const requests = await Friend.find({
       recipient: req.user.id,
       status: "pending",
-    }).populate("requester", "username avatar email");
+    }).populate("requester", "username avatar handle status");
 
     res.json(requests);
   } catch (error) {

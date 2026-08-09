@@ -10,7 +10,7 @@ http:
     type: json
     data: |-
       {
-        "conversationId": "{{conversationId}}",
+        "conversationId": "6a76ada98199b7c3914b5adb",
         "text": "Hello Alex! This is a test message."
       }
   auth:

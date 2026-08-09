@@ -14,10 +14,11 @@ const messageSchema = new mongoose.Schema(
             required: true,
         },
 
-        // "text" = normal message, "image" = picture, "file" = attachment
+        // "text" = normal message, "image" = picture, "video" = video clip,
+        // "file" = attachment, "poll" = poll message, "voice" = voice note
         type: {
             type: String,
-            enum: ["text", "image", "file"],
+            enum: ["text", "image", "file", "poll", "voice", "video"],
             default: "text",
         },
 
@@ -63,6 +64,79 @@ const messageSchema = new mongoose.Schema(
                 ref: "User",
             },
         ],
+
+        // Emoji reactions (one per user per message)
+        reactions: [
+            {
+                user: {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: "User",
+                },
+                emoji: { type: String, default: "" },
+            },
+        ],
+
+        // The message this one is a reply to (null = not a reply)
+        replyTo: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Message",
+            default: null,
+        },
+
+        // The original message this one was forwarded from (null = not a forward)
+        forwardedFrom: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Message",
+            default: null,
+        },
+
+        // User IDs who starred this message (starring is personal)
+        starredBy: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "User",
+            },
+        ],
+
+        // When the message disappears (null = never). Used by disappearing chats.
+        expiresAt: {
+            type: Date,
+            default: null,
+        },
+
+        // Poll data (for type "poll" messages)
+        poll: {
+            question: { type: String, trim: true, default: "" },
+            options: [
+                {
+                    text: { type: String, trim: true, default: "" },
+                    votes: [
+                        {
+                            type: mongoose.Schema.Types.ObjectId,
+                            ref: "User",
+                        },
+                    ],
+                },
+            ],
+        },
+
+        // Voice note length in seconds (for type "voice" messages)
+        duration: {
+            type: Number,
+            default: 0,
+        },
+
+        // View-once media: the file is wiped after someone opens it
+        viewOnce: {
+            type: Boolean,
+            default: false,
+        },
+
+        // True once someone has opened the view-once media
+        viewedOnce: {
+            type: Boolean,
+            default: false,
+        },
     },
     {
         timestamps: true,

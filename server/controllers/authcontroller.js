@@ -7,10 +7,28 @@ const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "7d" });
 };
 
+// Make a unique handle from a username (e.g. "John Doe" -> "johndoe").
+// Appends a number if the handle is already taken.
+const generateHandle = async (base) => {
+  const cleaned = (base || "user")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 15);
+
+  let handle = cleaned || "user";
+
+  for (let i = 0; i < 25; i++) {
+    if (!(await User.findOne({ handle }))) return handle;
+    handle = `${cleaned || "user"}${Math.floor(100 + Math.random() * 900)}`;
+  }
+
+  return handle;
+};
+
 // Register User
 const registerUser = async (req, res, next) => {
   try {
-    let { username, email, password } = req.body;
+    let { username, email, password, handle } = req.body;
 
     // Check if all fields are filled
     if (!username || !email || !password) {
@@ -21,12 +39,28 @@ const registerUser = async (req, res, next) => {
 
     username = username.trim();
     email = email.trim().toLowerCase();
+    if (handle) handle = handle.trim().toLowerCase();
 
     // Validate username length
     if (username.length < 3 || username.length > 20) {
       return res.status(400).json({
         message: "Username must be between 3 and 20 characters",
       });
+    }
+
+    // Validate handle format (optional field, else auto-generated)
+    if (handle) {
+      handle = handle.replace(/^@/, "");
+      if (!/^[a-z0-9_]{3,20}$/.test(handle)) {
+        return res.status(400).json({
+          message: "Handle must be 3-20 characters (letters, numbers, _)",
+        });
+      }
+      if (await User.findOne({ handle })) {
+        return res.status(400).json({
+          message: "Handle already taken",
+        });
+      }
     }
 
     // Validate email format
@@ -70,6 +104,7 @@ const registerUser = async (req, res, next) => {
       username,
       email,
       password: hashedPassword,
+      handle: handle || (await generateHandle(username)),
     });
 
     // Auto-login after registration
@@ -82,6 +117,7 @@ const registerUser = async (req, res, next) => {
         id: user._id,
         username: user.username,
         email: user.email,
+        handle: user.handle,
       },
     });
   } catch (error) {
@@ -119,6 +155,12 @@ const loginUser = async (req, res, next) => {
       });
     }
 
+    // Backfill a handle for accounts created before handles existed.
+    if (!user.handle) {
+      user.handle = await generateHandle(user.username);
+      await user.save();
+    }
+
     // Generate JWT
     const token = generateToken(user._id);
 
@@ -129,6 +171,7 @@ const loginUser = async (req, res, next) => {
         id: user._id,
         username: user.username,
         email: user.email,
+        handle: user.handle,
       },
     });
   } catch (error) {

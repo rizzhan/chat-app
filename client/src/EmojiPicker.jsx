@@ -1,11 +1,5 @@
 import { useState } from "react";
-
-const EMOJIS = [
-  "😀", "😁", "😂", "🤣", "😊", "😍", "😘", "😎",
-  "🤔", "😅", "😭", "🥳", "😴", "🤗", "🙄", "😳",
-  "👍", "👎", "👏", "🙏", "💪", "🔥", "❤️", "💯",
-  "🎉", "✨", "🌟", "⚡", "😉", "🥰", "🤩", "🤝",
-];
+import { EMOJIS } from "./emojis";
 
 function EmojiPicker({ onSelect }) {
   const [open, setOpen] = useState(false);

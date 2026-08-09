@@ -75,6 +75,10 @@ const initSocket = (server) => {
           text = "",
           type = "text",
           file = null,
+          replyTo = null,
+          poll = null,
+          duration = 0,
+          viewOnce = false,
         } = data || {};
 
         if (!conversationId) {
@@ -86,8 +90,11 @@ const initSocket = (server) => {
         const hasText = trimmedText.length > 0;
         const hasFile = file && file.url;
         const isTextType = type === "text";
+        const isPoll = type === "poll";
+        const hasPoll =
+          isPoll && poll && poll.question && Array.isArray(poll.options);
 
-        if (!hasText && !hasFile) {
+        if (!hasText && !hasFile && !hasPoll) {
           if (callback) callback({ error: "Message content is required" });
           return;
         }
@@ -95,6 +102,22 @@ const initSocket = (server) => {
         if (isTextType && !hasText) {
           if (callback) callback({ error: "Message text is required" });
           return;
+        }
+
+        if (isPoll) {
+          const question = (poll.question || "").trim();
+          const options = (poll.options || [])
+            .map((o) => (o && o.text ? String(o.text).trim() : ""))
+            .filter(Boolean);
+          if (!question) {
+            if (callback) callback({ error: "Poll question is required" });
+            return;
+          }
+          if (options.length < 2 || options.length > 10) {
+            if (callback)
+              callback({ error: "Polls need 2-10 options" });
+            return;
+          }
         }
 
         // Make sure the sender is a participant
@@ -124,9 +147,31 @@ const initSocket = (server) => {
         const message = await Message.create({
           conversationId,
           sender: userId,
-          text: trimmedText,
+          text: isPoll ? "" : trimmedText,
           type: isTextType ? "text" : type,
           ...(file ? { file } : {}),
+          ...(replyTo ? { replyTo } : {}),
+          ...(duration ? { duration: Number(duration) } : {}),
+          ...(viewOnce ? { viewOnce: true } : {}),
+          ...(isPoll
+            ? {
+                poll: {
+                  question: (poll.question || "").trim(),
+                  options: (poll.options || [])
+                    .map((o) => (o && o.text ? String(o.text).trim() : ""))
+                    .filter(Boolean)
+                    .map((text) => ({ text, votes: [] })),
+                },
+              }
+            : {}),
+          // Disappearing chats: stamp when this message should self-destruct
+          ...(conversation.disappearTime > 0
+            ? {
+                expiresAt: new Date(
+                  Date.now() + conversation.disappearTime * 1000
+                ),
+              }
+            : {}),
         });
 
         // Update the conversation's last message
@@ -134,10 +179,16 @@ const initSocket = (server) => {
           lastMessage: message._id,
         });
 
-        const populated = await Message.findById(message._id).populate(
-          "sender",
-          "username avatar email"
-        );
+        const populated = await Message.findById(message._id)
+          .populate("sender", "username avatar handle status")
+          .populate({
+            path: "replyTo",
+            populate: { path: "sender", select: "username avatar handle status" },
+          })
+          .populate({
+            path: "forwardedFrom",
+            populate: { path: "sender", select: "username avatar handle status" },
+          });
 
         // Broadcast to everyone in that conversation room (including sender)
         io.to(conversationId).emit("receive-message", populated);

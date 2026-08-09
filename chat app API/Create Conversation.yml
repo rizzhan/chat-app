@@ -10,7 +10,7 @@ http:
     type: json
     data: |-
       {
-        "receiverId": "PASTE_ALEXS_USER_ID_HERE"
+        "receiverId": "6a75e5158791bb06d900cb73"
       }
   auth:
     type: bearer
