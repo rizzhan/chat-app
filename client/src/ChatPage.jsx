@@ -1,10 +1,69 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import api, { SERVER_URL } from "./api";
 import Avatar from "./Avatar";
 import EmojiPicker from "./EmojiPicker";
 import { EMOJIS } from "./emojis";
 import GroupModal from "./GroupModal";
+import AvatarCropper from "./AvatarCropper";
+import ModalShell from "./components/ModalShell";
+import {
+  Settings,
+  Camera,
+  Plus,
+  Users,
+  UserPlus,
+  Pin,
+  MoreHorizontal,
+  Reply,
+  Lock,
+  LogOut,
+  Mic,
+  Paperclip,
+  Send,
+  Image,
+  Link,
+  MessageSquare,
+  MessageCircle,
+  Star,
+  BellOff,
+  Eye,
+  Forward,
+  X,
+  Check,
+  CheckCheck,
+  RefreshCw,
+  Shield,
+  Moon,
+  Sun,
+  Upload,
+  Play,
+  Pause,
+  Timer,
+  Video,
+  Clock,
+  Crown,
+  BarChart3,
+  Download,
+  Minus,
+  RotateCcw,
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
+  Trash2,
+} from "lucide-react";
+import { toast } from "sonner";
+import { motion } from "motion/react";
+import { animate } from "animejs";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 // Lightbox zoom preset levels (WhatsApp-style).
 const LIGHTBOX_ZOOM_LEVELS = [1, 1.5, 2, 2.5, 3, 4, 5];
@@ -103,6 +162,9 @@ const computeWaveform = async (url, bars = WAVEFORM_BARS) => {
 };
 
 function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
+  // Prefer @handle as the display name; fall back to username.
+  const dn = (u) => (u?.handle ? `@${u.handle}` : u?.username || "Unknown");
+
   const [conversations, setConversations] = useState([]);
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -122,6 +184,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   // Message edit / delete UI state
   const [menuOpen, setMenuOpen] = useState(null);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
+  const [reactionPickerBelow, setReactionPickerBelow] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
@@ -135,6 +198,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const [showPollModal, setShowPollModal] = useState(false);
   const [pollQuestion, setPollQuestion] = useState("");
   const [pollOptions, setPollOptions] = useState(["", ""]);
+  const [pollMulti, setPollMulti] = useState(false);
 
   // Voice recording + view-once state
   const [recording, setRecording] = useState(false);
@@ -163,15 +227,30 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const [filter, setFilter] = useState("all");
   const [convMenuOpen, setConvMenuOpen] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showMyProfile, setShowMyProfile] = useState(false);
   const [profileUser, setProfileUser] = useState(null);
   const [showScrollbar, setShowScrollbar] = useState(false);
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState(null);
+  const [confirmLeaveGroup, setConfirmLeaveGroup] = useState(null);
+  const [renameConv, setRenameConv] = useState(null);
+  const [renameName, setRenameName] = useState("");
+
+  // Chat lock PIN modal flow (steps: verify -> new -> confirm, or remove)
+  const [pinModal, setPinModal] = useState(null);
+  const [pinForm, setPinForm] = useState("");
+  const [pinNew, setPinNew] = useState("");
+  const [leftGroupId, setLeftGroupId] = useState(null);
+  const [avatarCropFile, setAvatarCropFile] = useState(null);
+  const [avatarCropConv, setAvatarCropConv] = useState(null);
+
+  // Message pagination ("Load earlier messages")
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
 
   // Profile editing (username, handle, status)
-  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
   const [editUsername, setEditUsername] = useState("");
   const [editHandle, setEditHandle] = useState("");
   const [editStatus, setEditStatus] = useState("");
@@ -211,6 +290,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const notificationsEnabledRef = useRef(notificationsEnabled);
   const messagesAreaRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const typingConvRef = useRef(null);
+  const typingTimersRef = useRef({});
 
   // Voice recording refs
   const mediaRecorderRef = useRef(null);
@@ -241,6 +322,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
   const scrollTimerRef = useRef(null);
   const lockHiddenAtRef = useRef(0);
+  const searchSeqRef = useRef(0);
 
   const filterBarRef = useRef(null);
 
@@ -254,6 +336,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const lightboxPointersRef = useRef(new Map());
   const lightboxDragRef = useRef(null);
   const lightboxPinchRef = useRef(null);
+  const sendButtonRef = useRef(null);
+  const chatInputRef = useRef(null);
 
   // Keep the latest values in refs so socket listeners always see them.
   useEffect(() => {
@@ -275,14 +359,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   // Close the ⋯ dropdowns (conversation list + message actions) on outside click.
   useEffect(() => {
     const onDocClick = (e) => {
-      if (convMenuOpen && !e.target.closest(".conv-menu, .conv-more")) {
+      if (convMenuOpen && !e.target.closest("[data-slot='dropdown-menu-content'], .conv-more")) {
         setConvMenuOpen(null);
       }
-      if (menuOpen && !e.target.closest(".message-menu, .more-button")) {
+      if (menuOpen && !e.target.closest("[data-slot='dropdown-menu-content'], .more-button")) {
         setMenuOpen(null);
       }
       if (reactionPickerFor && !e.target.closest(".message-actions")) {
         setReactionPickerFor(null);
+        setReactionPickerBelow(false);
       }
       if (attachMenuOpen && !e.target.closest(".attach-wrap")) {
         setAttachMenuOpen(false);
@@ -308,9 +393,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   // Auto-clear the green notice after 3 seconds.
   useEffect(() => {
     if (!notice) return;
+    toast.success(notice);
     const t = setTimeout(() => setNotice(""), 3000);
     return () => clearTimeout(t);
   }, [notice]);
+
+  // Surface errors through a sleek toast instead of an inline banner.
+  useEffect(() => {
+    if (!error) return;
+    toast.error(error);
+    const t = setTimeout(() => setError(""), 4000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   // ---- Socket.IO connection ----
   useEffect(() => {
@@ -322,13 +416,29 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
     socketRef.current = newSocket;
 
+    // After an auto-reconnect the socket starts with zero rooms, so re-join the
+    // currently open conversation or incoming messages stop arriving.
+    const joinSelected = () => {
+      if (selectedConvRef.current) {
+        newSocket.emit("join-conversation", selectedConvRef.current);
+      }
+    };
+    newSocket.on("connect", joinSelected);
+
     newSocket.on("connect_error", (err) => {
       setError(`Socket error: ${err.message}`);
     });
 
     // List of online user IDs sent by the server whenever it changes.
+    // Only update state when the set actually changed, otherwise every
+    // connect/disconnect elsewhere re-renders the whole chat tree.
     newSocket.on("online-users", (ids) => {
-      setOnlineUsers(new Set(ids));
+      setOnlineUsers((prev) => {
+        if (prev.size === ids.length && ids.every((id) => prev.has(id))) {
+          return prev;
+        }
+        return new Set(ids);
+      });
     });
 
     // Someone went offline. Remember their last seen time.
@@ -352,7 +462,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         Notification.permission === "granted"
       ) {
         if (!conv || !isMutedNow(conv) || isMentionAll) {
-          const senderName = msg.sender?.username || "Someone";
+          const senderName = dn(msg.sender);
           const title =
             isMentionAll
               ? `${conv?.name || "Group"} — ${senderName} @all`
@@ -395,7 +505,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       if (msg.conversationId === selectedConvRef.current) {
         setMessages((prev) => [...prev, msg]);
         newSocket.emit("read-messages", msg.conversationId);
-      } else {
+      } else if (msg.sender?._id !== userRef.current.id) {
+        // Don't count our own messages (e.g. sent from another tab) as unread.
         setUnreadMap((prev) => ({
           ...prev,
           [msg.conversationId]: (prev[msg.conversationId] || 0) + 1,
@@ -419,6 +530,21 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     // Someone started typing in a conversation we're viewing.
     newSocket.on("user-typing", ({ conversationId, userId }) => {
       if (userId === userRef.current.id) return;
+      // Auto-expire if the peer's stop-typing never arrives (crash, tab close).
+      const timerKey = `${conversationId}:${userId}`;
+      clearTimeout(typingTimersRef.current[timerKey]);
+      typingTimersRef.current[timerKey] = setTimeout(() => {
+        delete typingTimersRef.current[timerKey];
+        setTypingByConv((prev) => {
+          const list = (prev[conversationId] || []).filter((id) => id !== userId);
+          if (!list.length) {
+            const next = { ...prev };
+            delete next[conversationId];
+            return next;
+          }
+          return { ...prev, [conversationId]: list };
+        });
+      }, 4000);
       setTypingByConv((prev) => {
         const list = prev[conversationId] || [];
         if (list.includes(userId)) return prev;
@@ -428,6 +554,9 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
     // Someone stopped typing.
     newSocket.on("user-stop-typing", ({ conversationId, userId }) => {
+      const timerKey = `${conversationId}:${userId}`;
+      clearTimeout(typingTimersRef.current[timerKey]);
+      delete typingTimersRef.current[timerKey];
       setTypingByConv((prev) => {
         const list = (prev[conversationId] || []).filter((id) => id !== userId);
         if (!list.length) {
@@ -511,6 +640,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     // Someone read messages in the current conversation. Update my ticks.
     newSocket.on("messages-read", ({ conversationId, readerId }) => {
       if (conversationId !== selectedConvRef.current) return;
+      // Don't append our own id to our own outgoing messages on this client.
+      if (readerId === userRef.current.id) return;
 
       setMessages((prev) =>
         prev.map((m) =>
@@ -566,6 +697,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       newSocket.off("conversation-updated");
       newSocket.off("removed-from-group");
       newSocket.off("connect_error");
+      newSocket.off("connect", joinSelected);
       newSocket.disconnect();
     };
   }, []);
@@ -597,6 +729,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      Object.values(typingTimersRef.current).forEach(clearTimeout);
+      typingTimersRef.current = {};
       const r = mediaRecorderRef.current;
       if (r) {
         try {
@@ -638,6 +772,60 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   useEffect(() => {
     loadConversationsRef.current = loadConversations;
   }, [loadConversations]);
+
+  // Message pagination refs (no re-render needed for these).
+  const hasMoreMessagesRef = useRef(false);
+  const beforeCursorRef = useRef(null);
+  const loadingOlderRef = useRef(false);
+  const pendingScrollAnchorRef = useRef(null);
+
+  // Fetch older messages and prepend them, keeping the scroll position so the
+  // viewport doesn't jump.
+  const loadOlderMessages = useCallback(async () => {
+    const convId = selectedConvRef.current;
+    if (loadingOlderRef.current || !hasMoreMessagesRef.current || !convId) return;
+    loadingOlderRef.current = true;
+    try {
+      const res = await api.get(
+        `/messages/${convId}?limit=60&before=${beforeCursorRef.current}`
+      );
+      if (selectedConvRef.current !== convId) return;
+      const older = res.data.messages;
+      const el = messagesAreaRef.current;
+      const prevHeight = el ? el.scrollHeight : 0;
+      setMessages((prev) => [...older, ...prev]);
+      pendingScrollAnchorRef.current = prevHeight;
+      setHasMoreMessages(res.data.hasMore);
+      hasMoreMessagesRef.current = res.data.hasMore;
+      if (older.length) beforeCursorRef.current = older[0]._id;
+    } catch {
+      /* keep the button available so the user can retry */
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, []);
+
+  const loadOlderMessagesRef = useRef(loadOlderMessages);
+  useEffect(() => {
+    loadOlderMessagesRef.current = loadOlderMessages;
+  }, [loadOlderMessages]);
+
+  // After older messages are prepended, restore the scroll position.
+  useLayoutEffect(() => {
+    const el = messagesAreaRef.current;
+    if (el && pendingScrollAnchorRef.current != null) {
+      el.scrollTop = el.scrollHeight - pendingScrollAnchorRef.current;
+      pendingScrollAnchorRef.current = null;
+    }
+  }, [messages]);
+
+  // Auto-grow the message box as text wraps to new lines.
+  useEffect(() => {
+    const el = chatInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 150) + "px";
+  }, [newMessage]);
 
   const loadFriendRequests = async () => {
     try {
@@ -681,6 +869,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
     const onScroll = () => {
       setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+      // Reached the top -> fetch older messages (guarded by loadingOlderRef).
+      if (el.scrollTop < 80) loadOlderMessagesRef.current?.();
     };
 
     el.addEventListener("scroll", onScroll);
@@ -717,8 +907,9 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
   // ---- Helpers ----
   const otherUser = (c) => {
+    const me = user.id || user._id;
     const others = (c.participants || []).filter(
-      (p) => p && p._id !== user.id
+      (p) => p && p._id !== me
     );
     return others[0] || {};
   };
@@ -946,9 +1137,10 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
     if (conv.type === "group") {
       const names = ids
-        .map((id) =>
-          (conv.participants || []).find((p) => p._id === id)?.username
-        )
+        .map((id) => {
+          const p = (conv.participants || []).find((pp) => pp._id === id);
+          return dn(p);
+        })
         .filter(Boolean);
       return (names.length ? names.join(", ") : "Someone") + " typing…";
     }
@@ -1000,7 +1192,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       setProfileUser(null);
       setProfileFromChat(false);
       await loadBlockedUsers();
-      setNotice(`${u.username} blocked`);
+      setNotice(`${dn(u)} blocked`);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to block user");
     }
@@ -1012,7 +1204,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       setProfileUser(null);
       setProfileFromChat(false);
       await loadBlockedUsers();
-      setNotice(`${u.username} unblocked`);
+      setNotice(`${dn(u)} unblocked`);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to unblock user");
     }
@@ -1024,17 +1216,21 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setSearch(q);
 
     if (!q.trim()) {
+      searchSeqRef.current += 1;
       setSearchResults([]);
       return;
     }
 
+    const seq = ++searchSeqRef.current;
     try {
       const res = await api.get(
         `/users/search?username=${encodeURIComponent(q.trim())}`
       );
-      setSearchResults(res.data);
+      // Ignore stale responses so a slow earlier search can't overwrite a
+      // newer one (out-of-order network responses).
+      if (seq === searchSeqRef.current) setSearchResults(res.data);
     } catch {
-      setSearchResults([]);
+      if (seq === searchSeqRef.current) setSearchResults([]);
     }
   };
 
@@ -1053,7 +1249,19 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
   // ---- Select a conversation and load its messages ----
   const selectConversation = async (c) => {
-    socketRef.current?.emit("leave-conversation", selectedConvRef.current);
+    const prevId = selectedConvRef.current;
+    if (prevId && prevId !== c._id) {
+      // Tell the outgoing conversation we stopped typing, so its peers don't
+      // see "typing…" forever.
+      if (typingConvRef.current) {
+        socketRef.current?.emit("stop-typing", {
+          conversationId: typingConvRef.current,
+        });
+      }
+      socketRef.current?.emit("leave-conversation", prevId);
+    }
+    typingConvRef.current = null;
+    selectedConvRef.current = c._id;
     setSelectedConversation(c._id);
     setMessages([]);
     setError("");
@@ -1072,10 +1280,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setUnreadMap((prev) => ({ ...prev, [c._id]: 0 }));
 
     try {
-      const res = await api.get(`/messages/${c._id}`);
-      setMessages(res.data);
+      const res = await api.get(`/messages/${c._id}?limit=60`);
+      // Bail if the user switched conversations while this request was in
+      // flight — otherwise a slow response clobbers the wrong thread.
+      if (selectedConvRef.current !== c._id) return;
+      setMessages(res.data.messages);
+      setHasMoreMessages(res.data.hasMore);
+      hasMoreMessagesRef.current = res.data.hasMore;
+      beforeCursorRef.current = res.data.messages[0]?._id || null;
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to load messages");
+      if (selectedConvRef.current === c._id) {
+        setError(err.response?.data?.message || "Failed to load messages");
+      }
     }
   };
 
@@ -1083,15 +1299,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const stopTyping = () => {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = null;
-    if (selectedConvRef.current) {
-      socketRef.current?.emit("stop-typing", {
-        conversationId: selectedConvRef.current,
-      });
+    // Emit for the conversation where typing started, not whichever one is
+    // selected now (the 1.5s timer may fire after switching chats).
+    const convId = typingConvRef.current;
+    typingConvRef.current = null;
+    if (convId) {
+      socketRef.current?.emit("stop-typing", { conversationId: convId });
     }
   };
 
   const handleTyping = () => {
     if (!selectedConvRef.current) return;
+    typingConvRef.current = selectedConvRef.current;
     const socket = socketRef.current;
     if (socket?.connected) {
       socket.emit("typing", { conversationId: selectedConvRef.current });
@@ -1109,12 +1328,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setMessages((prev) => [...prev, res.data]);
   };
 
-  const sendSocket = (payload, fallback) => {
+  const sendSocket = (payload, fallback, onError) => {
     const socket = socketRef.current;
 
     if (socket && socket.connected) {
       socket.emit("send-message", payload, (res) => {
-        if (res && res.error) setError(res.error);
+        if (res && res.error) {
+          setError(res.error);
+          onError?.(res.error);
+        }
       });
     } else {
       fallback();
@@ -1133,12 +1355,26 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setReplyTarget(null);
     stopTyping();
 
+    if (sendButtonRef.current) {
+      animate(sendButtonRef.current, {
+        scale: [1, 1.18, 1],
+        duration: 420,
+        ease: "outCubic",
+      });
+    }
+
     sendSocket(
       { conversationId: selectedConversation, text, replyTo: replyId },
       () =>
         sendViaApi({ text, replyTo: replyId }).catch((err) =>
           setError(err.response?.data?.message || "Failed to send message")
-        )
+        ),
+      () => {
+        // The server rejected the message (e.g. peer blocked you) — put the
+        // composed text back so it isn't lost.
+        setNewMessage(text);
+        if (replyId) setReplyTarget(replyTarget);
+      }
     );
   };
 
@@ -1161,8 +1397,19 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   // ---- Lightbox (WhatsApp-style image viewer with zoom + pan) ----
-  const openLightbox = (url, name) =>
-    setLightbox({ url, name, zoom: 1, pan: { x: 0, y: 0 } });
+  const openLightbox = (url, name, opts = {}) => {
+    // Reset any leftover gesture state so a fresh open always starts clean.
+    lightboxPointersRef.current.clear();
+    lightboxDragRef.current = null;
+    lightboxPinchRef.current = null;
+    setLightbox({
+      url,
+      name,
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+      canSave: opts.canSave ?? true,
+    });
+  };
 
   const clampLightboxPan = (pan) => {
     const img = lightboxImgRef.current;
@@ -1271,8 +1518,25 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
   const onLightboxPointerUp = (e) => {
     lightboxPointersRef.current.delete(e.pointerId);
-    lightboxDragRef.current = null;
+    if (lightboxPointersRef.current.size === 1) {
+      // Dropped from a pinch back to one finger: resume panning with the
+      // pointer that is still down instead of freezing until the next touch.
+      const [remaining] = [...lightboxPointersRef.current.values()];
+      lightboxDragRef.current = {
+        startX: remaining.x,
+        startY: remaining.y,
+        origPan: { ...(lightbox?.pan || { x: 0, y: 0 }) },
+        active: (lightbox?.zoom || 1) > 1,
+      };
+    } else {
+      lightboxDragRef.current = null;
+    }
     lightboxPinchRef.current = null;
+    try {
+      lightboxStageRef.current?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer capture was already gone */
+    }
   };
 
   const zoomLightboxBy = (dir) => {
@@ -1408,21 +1672,65 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   // ---- Profile picture ----
-  const handleAvatarSelect = async (e) => {
+  const handleAvatarSelect = (e) => {
     const file = e.target.files[0];
     e.target.value = "";
 
     if (!file) return;
+    setAvatarCropConv(null);
+    setAvatarCropFile(file);
+  };
 
+  const handleGroupAvatarSelect = (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+
+    if (!file) return;
+    setAvatarCropConv(activeConv);
+    setAvatarCropFile(file);
+  };
+
+  const saveAvatarCrop = async (blob) => {
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", new File([blob], "avatar.png", { type: "image/png" }));
 
     try {
-      const res = await api.post("/users/avatar", formData);
-      onUpdateUser(res.data);
-      setNotice("Profile picture updated");
+      if (avatarCropConv) {
+        const res = await api.post(
+          `/conversations/${avatarCropConv._id}/avatar`,
+          formData
+        );
+        setNotice("Group picture updated");
+        await loadConversations();
+      } else {
+        const res = await api.post("/users/avatar", formData);
+        onUpdateUser(res.data);
+        setNotice("Profile picture updated");
+      }
+      setAvatarCropFile(null);
+      setAvatarCropConv(null);
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to update profile picture");
+      setError(err.response?.data?.message || "Failed to update picture");
+    }
+  };
+
+  const removeGroupAvatar = async (conv) => {
+    try {
+      await api.delete(`/conversations/${conv._id}/avatar`);
+      setNotice("Group picture removed");
+      await loadConversations();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to remove group picture");
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    try {
+      const res = await api.patch("/users/me", { avatar: "" });
+      onUpdateUser(res.data);
+      setNotice("Profile picture removed");
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to remove profile picture");
     }
   };
 
@@ -1430,7 +1738,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setEditUsername(user.username || "");
     setEditHandle((user.handle || "").replace(/^@/, ""));
     setEditStatus(user.status || "");
-    setEditProfileOpen(true);
+    setShowEditProfile(true);
   };
 
   const saveProfile = async () => {
@@ -1443,7 +1751,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       });
       onUpdateUser(res.data);
       setNotice("Profile updated");
-      setEditProfileOpen(false);
+      setShowEditProfile(false);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to update profile");
     } finally {
@@ -1464,18 +1772,30 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   const toggleNotifications = async () => {
-    if (
-      !notificationsEnabled &&
-      "Notification" in window &&
-      Notification.permission === "default"
-    ) {
+    if (!("Notification" in window)) {
+      setError("Desktop notifications are not supported in this browser");
+      return;
+    }
+
+    if (!notificationsEnabled && Notification.permission === "default") {
       try {
-        await Notification.requestPermission();
+        const result = await Notification.requestPermission();
+        if (result !== "granted") {
+          setError("Notification permission was not granted");
+          return;
+        }
       } catch {
-        /* older browsers */
+        setError("Notification permission was not granted");
+        return;
       }
     }
+
     const enabled = !notificationsEnabled;
+    if (enabled && Notification.permission !== "granted") {
+      setError("Notifications are blocked — allow them in your browser settings");
+      return;
+    }
+
     setNotificationsEnabled(enabled);
     localStorage.setItem("notifications", enabled ? "on" : "off");
     setNotice(
@@ -1554,11 +1874,11 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const replySnippet = (m) => {
     if (!m) return "";
     if (m.deleted) return "This message has been deleted";
-    if (m.type === "image") return "📷 Photo";
-    if (m.type === "video") return "🎥 Video";
-    if (m.type === "file") return `📎 ${m.file?.name || "File"}`;
-    if (m.type === "poll") return `📊 ${m.poll?.question || "Poll"}`;
-    if (m.type === "voice") return "🎤 Voice message";
+    if (m.type === "image") return m.viewOnce ? "View-once photo" : "Photo";
+    if (m.type === "video") return m.viewOnce ? "View-once video" : "Video";
+    if (m.type === "file") return `File: ${m.file?.name || "attachment"}`;
+    if (m.type === "poll") return `Poll: ${m.poll?.question || "Question"}`;
+    if (m.type === "voice") return "Voice message";
     return m.text;
   };
 
@@ -1684,8 +2004,11 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       );
       // Refresh the current messages so the new expiry stamps apply.
       if (selectedConversation === conv._id) {
-        const res2 = await api.get(`/messages/${conv._id}`);
-        setMessages(res2.data);
+        const res2 = await api.get(`/messages/${conv._id}?limit=60`);
+        setMessages(res2.data.messages);
+        setHasMoreMessages(res2.data.hasMore);
+        hasMoreMessagesRef.current = res2.data.hasMore;
+        beforeCursorRef.current = res2.data.messages[0]?._id || null;
       }
     } catch (err) {
       setError(
@@ -1719,6 +2042,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       type: "poll",
       poll: {
         question,
+        multi: pollMulti,
         options: options.map((text) => ({ text })),
       },
     };
@@ -1733,6 +2057,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
     setPollQuestion("");
     setPollOptions(["", ""]);
+    setPollMulti(false);
     setShowPollModal(false);
   };
 
@@ -2319,7 +2644,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const sendFriendRequest = async (u) => {
     try {
       await api.post("/friends/request", { userId: u._id });
-      setNotice(`Friend request sent to ${u.username}`);
+      setNotice(`Friend request sent to ${dn(u)}`);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to send request");
     }
@@ -2332,7 +2657,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         accept: true,
       });
       setFriendRequests((prev) => prev.filter((x) => x._id !== fr._id));
-      setNotice(`You are now friends with ${fr.requester.username}`);
+      setNotice(`You are now friends with ${dn(fr.requester)}`);
       loadFriends();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to accept request");
@@ -2366,24 +2691,26 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   const leaveGroup = async (conv) => {
+    if (!conv) return;
+    setLeftGroupId(conv._id);
+    setSelectedConversation(null);
+    setMessages([]);
+    setGroupInfoOpen(false);
     try {
       await api.delete(`/conversations/${conv._id}/members/${user.id}`);
-      setSelectedConversation(null);
-      setMessages([]);
-      setGroupInfoOpen(false);
       setNotice("You left the group");
-      await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to leave group");
     }
+    await loadConversations();
   };
 
   // ---- Group admin tools ----
   const removeMember = async (conv, member) => {
-    if (!window.confirm(`Remove ${member.username} from the group?`)) return;
+    if (!window.confirm(`Remove ${dn(member)} from the group?`)) return;
     try {
       await api.delete(`/conversations/${conv._id}/members/${member._id}`);
-      setNotice(`${member.username} removed`);
+      setNotice(`${dn(member)} removed`);
       await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to remove member");
@@ -2396,7 +2723,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         userId: member._id,
         action: "promote",
       });
-      setNotice(`${member.username} is now an admin`);
+      setNotice(`${dn(member)} is now an admin`);
       await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to promote member");
@@ -2409,7 +2736,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         userId: member._id,
         action: "demote",
       });
-      setNotice(`${member.username} is no longer an admin`);
+      setNotice(`${dn(member)} is no longer an admin`);
       await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to demote member");
@@ -2419,7 +2746,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const transferOwnership = async (conv, member) => {
     if (
       !window.confirm(
-        `Transfer group ownership to ${member.username}? You will become an admin.`
+        `Transfer group ownership to ${dn(member)}? You will become an admin.`
       )
     )
       return;
@@ -2427,19 +2754,25 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       await api.post(`/conversations/${conv._id}/transfer`, {
         userId: member._id,
       });
-      setNotice(`Ownership transferred to ${member.username}`);
+      setNotice(`Ownership transferred to ${dn(member)}`);
       await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to transfer ownership");
     }
   };
 
-  const renameGroup = async (conv) => {
-    const name = window.prompt("New group name", conv.name);
-    if (!name || !name.trim()) return;
+  const renameGroup = (conv) => {
+    setRenameName(conv.name || "");
+    setRenameConv(conv);
+  };
+
+  const submitRename = async () => {
+    const name = renameName.trim();
+    if (!name || !renameConv) return;
     try {
-      await api.put(`/conversations/${conv._id}/name`, { name: name.trim() });
+      await api.put(`/conversations/${renameConv._id}/name`, { name });
       setNotice("Group renamed");
+      setRenameConv(null);
       await loadConversations();
     } catch (err) {
       setError(err.response?.data?.message || "Failed to rename group");
@@ -2447,55 +2780,64 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   // ---- Chat lock (PIN) ----
-  const setChatPin = () => {
-    const current = localStorage.getItem("chatLockPin");
+  const openSetPin = () => {
+    setPinForm("");
+    setPinNew("");
+    setPinModal(localStorage.getItem("chatLockPin") ? "verify" : "new");
+  };
 
-    if (current) {
-      const check = window.prompt("Enter your current PIN to change it");
-      if (check !== current) {
+  const openRemovePin = () => {
+    setPinForm("");
+    setPinModal("remove");
+  };
+
+  const continuePin = () => {
+    const current = localStorage.getItem("chatLockPin");
+    const value = pinForm.trim();
+
+    if (pinModal === "verify") {
+      if (value !== current) {
         setError("Incorrect PIN");
         return;
       }
+      setPinForm("");
+      setPinModal("new");
+    } else if (pinModal === "new") {
+      if (!/^\d{4,6}$/.test(value)) {
+        setError("PIN must be 4-6 digits");
+        return;
+      }
+      setPinNew(value);
+      setPinForm("");
+      setPinModal("confirm");
+    } else if (pinModal === "confirm") {
+      if (value !== pinNew) {
+        setError("PINs do not match");
+        return;
+      }
+      localStorage.setItem("chatLockPin", pinNew);
+      setHasPin(true);
+      setPinModal(null);
+      setPinForm("");
+      setNotice("Chat PIN set");
+    } else if (pinModal === "remove") {
+      if (value !== current) {
+        setError("Incorrect PIN");
+        return;
+      }
+      localStorage.removeItem("chatLockPin");
+      setHasPin(false);
+      setLocked(false);
+      setPinError("");
+      setPinModal(null);
+      setPinForm("");
+      setNotice("Chat lock removed");
     }
-
-    const p1 = window.prompt("Enter a 4-6 digit PIN to lock your chat");
-    if (!p1) return;
-    if (!/^\d{4,6}$/.test(p1)) {
-      setError("PIN must be 4-6 digits");
-      return;
-    }
-
-    const p2 = window.prompt("Confirm your PIN");
-    if (p1 !== p2) {
-      setError("PINs do not match");
-      return;
-    }
-
-    localStorage.setItem("chatLockPin", p1);
-    setHasPin(true);
-    setNotice("Chat PIN set");
-  };
-
-  const removeChatPin = () => {
-    const current = localStorage.getItem("chatLockPin");
-    if (!current) return;
-
-    const check = window.prompt("Enter your PIN to remove the lock");
-    if (check !== current) {
-      setError("Incorrect PIN");
-      return;
-    }
-
-    localStorage.removeItem("chatLockPin");
-    setHasPin(false);
-    setLocked(false);
-    setPinError("");
-    setNotice("Chat lock removed");
   };
 
   const lockNow = () => {
     if (!localStorage.getItem("chatLockPin")) {
-      setChatPin();
+      openSetPin();
       return;
     }
     setPinInput("");
@@ -2597,7 +2939,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         if (m.viewedOnce) {
           return (
             <div className="message-deleted view-once-opened">
-              {isVideo ? "🎥 Video opened" : "📷 Photo opened"}
+              {isVideo ? <><Video size={14} /> Video opened</> : <><Camera size={14} /> Photo opened</>}
             </div>
           );
         }
@@ -2606,7 +2948,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             <div className="view-once-button view-once-own">
               <span className="view-once-blur" />
               <span className="view-once-label">
-                {isVideo ? "🔒 View-once video" : "🔒 View-once photo"}
+                {isVideo ? <><Lock size={14} /> View-once video</> : <><Lock size={14} /> View-once photo</>}
               </span>
             </div>
           );
@@ -2615,7 +2957,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
           <button className="view-once-button" onClick={() => openViewOnce(m)}>
             <span className="view-once-blur" />
             <span className="view-once-label">
-              {isVideo ? "▶ View once" : "👁 View once"}
+              {isVideo ? <><Eye size={14} /> View once</> : <><Eye size={14} /> View once</>}
             </span>
           </button>
         );
@@ -2658,7 +3000,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             className={`voice-play${playingVoice === m._id ? " playing" : ""}`}
             onClick={() => toggleVoice(m)}
           >
-            {playingVoice === m._id ? "❚❚" : "▶"}
+            {playingVoice === m._id ? <Pause size={16} /> : <Play size={16} />}
           </button>
           <div
             className={"voice-waveform" + (playingVoice === m._id ? " playing" : "")}
@@ -2737,7 +3079,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
           target="_blank"
           rel="noreferrer"
         >
-          📎 {m.file?.name || "File"}
+          <Paperclip size={14} /> {m.file?.name || "File"}
         </a>
       );
     }
@@ -2750,6 +3092,9 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       return (
         <div className="poll-card">
           <div className="poll-question">{m.poll.question}</div>
+          {m.poll.multi && (
+            <div className="poll-multi-hint">Multiple answers allowed</div>
+          )}
           <div className="poll-options">
             {m.poll.options.map((o, i) => {
               const voted = (o.votes || []).some(
@@ -2769,7 +3114,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   />
                   <span className="poll-option-text">{o.text}</span>
                   <span className="poll-option-meta">
-                    {voted ? "✓ " : ""}
+                    {voted ? <Check size={12} /> : null}
                     {count} · {pct}%
                   </span>
                 </button>
@@ -2789,13 +3134,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const previewText = (m) => {
     if (!m) return "No messages yet";
     if (m.deleted) return "This message has been deleted";
-    if (m.type === "image") return m.viewOnce ? "📷 View-once photo" : "📷 Photo";
-    if (m.type === "video") return m.viewOnce ? "🎥 View-once video" : "🎥 Video";
-    if (m.type === "voice") return "🎤 Voice message";
-    if (m.type === "file") return `📎 ${m.file?.name || "File"}`;
-    if (m.type === "poll") return `📊 ${m.poll?.question || "Poll"}`;
-    const prefix = (m.sender?._id === user.id ? "You: " : "") + m.text;
-    return mentionsAll(m.text) ? `📣 ${prefix}` : prefix;
+    if (m.type === "image") return m.viewOnce ? "View-once photo" : "Photo";
+    if (m.type === "video") return m.viewOnce ? "View-once video" : "Video";
+    if (m.type === "voice") return "Voice message";
+    if (m.type === "file") return `File: ${m.file?.name || "attachment"}`;
+    if (m.type === "poll") return `Poll: ${m.poll?.question || "Question"}`;
+    // lastMessage.sender may be a bare ObjectId (not populated) on the sidebar,
+    // so also match when it's the raw string id.
+    const mine =
+      m.sender?._id === user.id ||
+      (typeof m.sender === "string" && m.sender === user.id);
+    const prefix = (mine ? "You: " : "") + m.text;
+    return mentionsAll(m.text) ? `@all: ${prefix}` : prefix;
   };
 
   // ---- Render ----
@@ -2894,35 +3244,79 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     <div className="chat-page">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <span className="app-logo">ChatApp</span>
+          <span className="app-logo">बातचीत</span>
           <div className="sidebar-actions">
-            <button
-              className="icon-button"
-              title="Settings"
-              onClick={() => setShowSettings(true)}
-            >
-              ⚙️
-            </button>
+            <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  className="icon-button"
+                  onClick={() => setShowSettings(true)}
+                >
+                  <Settings size={20} />
+                </button>
+              }
+            />
+            <TooltipContent>Settings</TooltipContent>
+          </Tooltip>
           </div>
         </div>
 
-        <div className="sidebar-user">
-          <label className="avatar-upload" title="Change profile picture">
-            <Avatar user={user} small={false} />
-            <span className="avatar-overlay">📷</span>
+        <div
+          className="sidebar-user"
+          onClick={() => setShowMyProfile(true)}
+        >
+          <div className="avatar-upload">
+            <button
+              type="button"
+              className="avatar-view"
+              title={
+                user.avatar
+                  ? "View profile picture"
+                  : "No profile picture yet"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                user.avatar &&
+                  openLightbox(
+                    SERVER_URL + user.avatar,
+                    (user.username || "Profile") + " profile picture"
+                  );
+              }}
+            >
+              <Avatar user={user} small={false} />
+            </button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <label
+                    className="avatar-edit"
+                    htmlFor="avatar-upload"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Camera size={14} />
+                  </label>
+                }
+              />
+              <TooltipContent>Change profile picture</TooltipContent>
+            </Tooltip>
             <input
+              id="avatar-upload"
               type="file"
               accept="image/*"
               hidden
               onChange={handleAvatarSelect}
             />
-          </label>
+          </div>
           <div className="sidebar-user-info">
-            <div className="user-name">{user.username}</div>
+            <div className="user-name">{dn(user)}</div>
             <div className="user-status">
-              {user.status || "Hey there! I am using ChatApp."}
+              {user.status || "Hey there! I am using बातचीत."}
             </div>
           </div>
+          <span className="sidebar-user-open" aria-hidden="true">
+            <ChevronRight size={16} />
+          </span>
         </div>
 
         <div className="sidebar-tools">
@@ -2952,7 +3346,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         <div className="search-box">
           <input
             type="text"
-            placeholder="Search users..."
+            placeholder="Search by name or @handle"
             value={search}
             onChange={handleSearch}
           />
@@ -3007,7 +3401,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
           </div>
         </div>
 
-        <div className="conversation-list">
+        <div className="conversation-list scroll-fade-b">
           {isSearching ? (
             searchResults.length === 0 ? (
               <div className="empty-hint">No users found.</div>
@@ -3020,25 +3414,40 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 >
                   <Avatar user={u} />
                   <div className="conversation-info">
-                    <div className="conversation-name">{u.username}</div>
-                    {u.handle && <div className="user-handle">@{u.handle}</div>}
+                    <div className="conversation-name">{dn(u)}</div>
                     <div className="conversation-preview">Start chat</div>
                   </div>
-                  <button
-                    className="mini-button"
-                    title="Add friend"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      sendFriendRequest(u);
-                    }}
-                  >
-                    ＋
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className="mini-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            sendFriendRequest(u);
+                          }}
+                        >
+                          <Plus size={14} />
+                        </button>
+                      }
+                    />
+                    <TooltipContent>Add friend</TooltipContent>
+                  </Tooltip>
                 </div>
               ))
             )
           ) : loading ? (
-            <div className="empty-hint">Loading...</div>
+            <div className="conversation-list-loading">
+              {[0, 1, 2, 3].map((i) => (
+                <div className="conv-row-skeleton" key={i}>
+                  <Skeleton className="h-11 w-11 shrink-0 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-2/5" />
+                    <Skeleton className="h-3 w-3/4" />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : filtered.length === 0 ? (
             <div className="empty-hint">{listEmptyHint}</div>
           ) : (
@@ -3060,7 +3469,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     <Avatar
                       user={
                         isGroup
-                          ? { username: c.name }
+                          ? { username: c.name, avatar: c.avatar }
                           : {
                               username: other.username,
                               avatar: other.avatar,
@@ -3072,10 +3481,10 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                       <div className="conversation-name">
                         {c.isPinned && (
                           <span className="pin-indicator" title="Pinned">
-                            📌
+                            <Pin size={12} />
                           </span>
                         )}
-                        {isGroup ? "👥 " + c.name : other.username}
+                        {isGroup ? <><Users size={14} /> {c.name}</> : dn(other)}
                       </div>
                       <div
                         className={
@@ -3083,7 +3492,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                           (typingHere ? " typing-preview" : "")
                         }
                       >
-                        {typingHere ? "typing…" : previewText(c.lastMessage)}
+                        {typingHere ? (
+                          <span className="typing-dots">
+                            <span />
+                            <span />
+                            <span />
+                          </span>
+                        ) : (
+                          previewText(c.lastMessage)
+                        )}
                       </div>
                     </div>
                     <div className="conversation-right">
@@ -3095,34 +3512,52 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                       )}
                     </div>
                   </div>
-                  <button
-                    className="conv-more"
-                    title="More options"
-                    onClick={() =>
-                      setConvMenuOpen(convMenuOpen === c._id ? null : c._id)
+                  <DropdownMenu
+                    open={convMenuOpen === c._id}
+                    onOpenChange={(open) =>
+                      setConvMenuOpen(open ? c._id : null)
                     }
                   >
-                    ⋯
-                  </button>
-                  {convMenuOpen === c._id && (
-                    <div className="conv-menu">
-                      <button onClick={() => toggleConversationFlag(c, "pin")}>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <DropdownMenuTrigger
+                            className="conv-more"
+                            aria-label="More options"
+                          >
+                            <MoreHorizontal size={18} />
+                          </DropdownMenuTrigger>
+                        }
+                      />
+                      <TooltipContent>More options</TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent
+                      align="end"
+                      side="bottom"
+                      sideOffset={6}
+                      className="min-w-44"
+                    >
+                      <DropdownMenuItem
+                        onClick={() => toggleConversationFlag(c, "pin")}
+                      >
                         {c.isPinned ? "Unpin chat" : "Pin chat"}
-                      </button>
-                      <button
-                        onClick={() => toggleConversationFlag(c, "favorite")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() =>
+                          toggleConversationFlag(c, "favorite")
+                        }
                       >
                         {c.isFavorite
                           ? "Remove from favorites"
                           : "Add to favorites"}
-                      </button>
-                      <button
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
                         onClick={() => toggleConversationFlag(c, "archive")}
                       >
                         {c.isArchived ? "Unarchive chat" : "Archive chat"}
-                      </button>
+                      </DropdownMenuItem>
                       {!isGroup && (
-                        <button
+                        <DropdownMenuItem
                           onClick={() => {
                             setConvMenuOpen(null);
                             setProfileFromChat(false);
@@ -3130,16 +3565,17 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                           }}
                         >
                           View profile
-                        </button>
+                        </DropdownMenuItem>
                       )}
-                      <button
-                        className="conv-menu-danger"
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
                         onClick={() => setConfirmDeleteChat(c)}
                       >
                         Delete chat
-                      </button>
-                    </div>
-                  )}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               );
             })
@@ -3148,13 +3584,27 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       </aside>
 
       <main className={"chat-main chat-theme-" + chatTheme}>
+        <div className="chat-sparkles" aria-hidden="true">
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+          <span className="sparkle" />
+        </div>
         {!selectedConversation ? (
           <div className="empty-state">
-            <div className="empty-state-icon">🔒</div>
-            <div className="empty-state-title">ChatApp</div>
+            <div className="empty-state-icon"><Lock size={48} /></div>
+            <div className="empty-state-title">बातचीत</div>
             <div className="empty-state-text">
               Messages are end-to-end encrypted. No one outside of this chat,
-              not even ChatApp, can read or listen to them.
+              not even बातचीत, can read or listen to them.
             </div>
           </div>
         ) : (
@@ -3164,7 +3614,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             );
             const other = conv ? otherUser(conv) : {};
             const isGroup = conv?.type === "group";
-            const displayName = isGroup ? conv.name : other.username;
+            const displayName = isGroup ? conv.name : dn(other);
             const typingHere = typingText(conv);
 
             return (
@@ -3187,7 +3637,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     <Avatar
                       user={
                         isGroup
-                          ? { username: conv.name }
+                          ? { username: conv.name, avatar: conv.avatar }
                           : {
                               username: other.username,
                               avatar: other.avatar,
@@ -3203,21 +3653,26 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             className="mute-indicator"
                             title="Notifications muted"
                           >
-                            🔕
+                            <BellOff size={14} />
                           </span>
                         )}
-                        {conv.disappearTime > 0 && (
+                        {conv?.disappearTime > 0 && (
                           <span
                             className="mute-indicator"
                             title={`Messages disappear after ${formatDisappear(conv.disappearTime)}`}
                           >
-                            ⏳
+                            <Clock size={14} />
                           </span>
                         )}
                       </div>
                       {typingHere ? (
                         <div className="chat-status typing-preview">
-                          {typingHere}
+                          <span className="typing-dots">
+                            <span />
+                            <span />
+                            <span />
+                          </span>
+                          <span>{typingHere}</span>
                         </div>
                       ) : (
                         <div
@@ -3236,30 +3691,48 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   <div className="chat-actions">
                     {isGroup && (
                       <>
-                        <button
-                          className="icon-button"
-                          title="Add members"
-                          onClick={() => openGroupModal("add", conv)}
-                        >
-                          ＋
-                        </button>
-                        <button
-                          className="icon-button"
-                          title="Leave group"
-                          onClick={() => leaveGroup(conv)}
-                        >
-                          🚪
-                        </button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                className="icon-button"
+                                onClick={() => openGroupModal("add", conv)}
+                              >
+                                <UserPlus size={20} />
+                              </button>
+                            }
+                          />
+                          <TooltipContent>Add members</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                className="icon-button"
+                                onClick={() => setConfirmLeaveGroup(conv)}
+                              >
+                                <LogOut size={20} />
+                              </button>
+                            }
+                          />
+                          <TooltipContent>Leave group</TooltipContent>
+                        </Tooltip>
                       </>
                     )}
                     <div className="chat-menu-wrap">
-                      <button
-                        className="icon-button"
-                        title="More options"
-                        onClick={() => setChatMenuOpen((v) => !v)}
-                      >
-                        ⋯
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              className="icon-button"
+                              onClick={() => setChatMenuOpen((v) => !v)}
+                            >
+                              <MoreHorizontal size={20} />
+                            </button>
+                          }
+                        />
+                        <TooltipContent>More options</TooltipContent>
+                      </Tooltip>
                       {chatMenuOpen && (
                         <>
                           <div
@@ -3281,7 +3754,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                 setShowStarredModal(true);
                               }}
                             >
-                              ⭐ Starred messages
+                              <Star size={16} /> Starred messages
                             </button>
                             <button
                               onClick={() => {
@@ -3319,8 +3792,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                 setShowDisappearPicker(true);
                               }}
                             >
-                              {conv.disappearTime > 0
-                                ? `Disappearing: ${formatDisappear(conv.disappearTime)}`
+                              {conv?.disappearTime > 0
+                                ? `Disappearing: ${formatDisappear(conv?.disappearTime)}`
                                 : "Disappearing messages"}
                             </button>
                             {isGroup && (
@@ -3333,16 +3806,19 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                 Rename group
                               </button>
                             )}
-                            <button
-                              onClick={() => {
-                                setChatMenuOpen(false);
-                                setPollQuestion("");
-                                setPollOptions(["", ""]);
-                                setShowPollModal(true);
-                              }}
-                            >
-                              📊 Create poll
-                            </button>
+                            {isGroup && (
+                              <button
+                                onClick={() => {
+                                  setChatMenuOpen(false);
+                                  setPollQuestion("");
+                                  setPollOptions(["", ""]);
+                                  setPollMulti(false);
+                                  setShowPollModal(true);
+                                }}
+                              >
+                                <BarChart3 size={16} /> Create poll
+                              </button>
+                            )}
                             {!isGroup && (
                               <button
                                 onClick={() => {
@@ -3372,22 +3848,20 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   </div>
                 </header>
 
-                {error && <div className="error-banner">{error}</div>}
-                {notice && <div className="notice-banner">{notice}</div>}
-
                 <div
-                  className="messages-area"
+                  className="messages-area scroll-fade-b"
                   ref={messagesAreaRef}
                   style={
-                    conv.background
+                    conv?.background
                       ? {
-                          backgroundImage: `url(${conv.background})`,
+                          backgroundImage: `url(${SERVER_URL}${conv.background})`,
                           backgroundSize: "cover",
                           backgroundPosition: "center",
                         }
                       : undefined
                   }
                 >
+                  <div className="messages-thread">
                   {messages.length === 0 ? (
                     <div className="empty-state">
                       <div className="empty-state-text">
@@ -3395,14 +3869,37 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                       </div>
                     </div>
                   ) : (
-                    messages.map((m, i) => {
-                      const mine = m.sender?._id === user.id;
+                    <>
+                      {hasMoreMessages && (
+                        <div className="load-older-wrap">
+                          <button
+                            className="load-older-btn"
+                            onClick={loadOlderMessages}
+                          >
+                            Load earlier messages
+                          </button>
+                        </div>
+                      )}
+                      {messages.map((m, i) => {
+                      const mine = m.sender?._id === (user.id || user._id);
                       const prev = messages[i - 1];
+                      const next = messages[i + 1];
                       const newDay = !prev || !sameDay(prev.createdAt, m.createdAt);
+                      const sameSenderAsPrev =
+                        prev &&
+                        prev.sender?._id === m.sender?._id &&
+                        !newDay;
+                      const sameSenderAsNext =
+                        next &&
+                        next.sender?._id === m.sender?._id &&
+                        sameDay(m.createdAt, next.createdAt);
+                      const groupStart = !sameSenderAsPrev;
+                      const groupEnd = !sameSenderAsNext;
                       const showSender =
                         isGroup &&
                         !mine &&
-                        (!prev || prev.sender?._id !== m.sender?._id);
+                        (!prev || prev.sender?._id !== m.sender?._id || newDay);
+                      const showAvatar = isGroup && !mine && groupEnd;
                       return (
                         <Fragment key={m._id}>
                           {newDay && (
@@ -3410,19 +3907,31 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                               {formatDay(m.createdAt)}
                             </div>
                           )}
-                          <div
+                          <motion.div
                             id={`msg-${m._id}`}
-                            className={"message" + (mine ? " own" : "")}
+                            className={
+                              "message" +
+                              (mine ? " own" : "") +
+                              (isGroup && !mine ? " group" : "") +
+                              (!groupStart ? " grouped" : "") +
+                              (groupStart ? " group-start" : "") +
+                              (groupEnd ? " group-end" : "")
+                            }
+                            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            transition={{
+                              duration: 0.28,
+                              ease: [0.22, 1, 0.36, 1],
+                            }}
                           >
-                            {showSender && (
-                              <div className="message-sender-row">
-                                <Avatar user={m.sender} small />
+                            {showAvatar && <Avatar user={m.sender} small />}
+                            <div className="message-body">
+                              {showSender && (
                                 <div className="message-sender">
-                                  {m.sender?.username}
+                                  {dn(m.sender)}
                                 </div>
-                              </div>
-                            )}
-                            <div className="message-bubble">
+                              )}
+                              <div className="message-bubble">
                               {m.replyTo && !m.deleted && (
                                 <div
                                   className="reply-preview"
@@ -3432,7 +3941,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                   <div className="reply-preview-name">
                                     {m.replyTo.sender?._id === user.id
                                       ? "You"
-                                      : m.replyTo.sender?.username}
+                                      : dn(m.replyTo.sender)}
                                   </div>
                                   <div className="reply-preview-text">
                                     {replySnippet(m.replyTo)}
@@ -3441,7 +3950,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                               )}
                               {m.forwardedFrom && !m.deleted && (
                                 <div className="forwarded-label">
-                                  ↪ Forwarded
+                                  <Forward size={12} /> Forwarded
                                 </div>
                               )}
                               {editingId === m._id ? (
@@ -3480,7 +3989,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                               <div className="message-meta">
                                 {isStarred(m) && (
                                   <span className="edited-label" title="Starred">
-                                    ⭐
+                                    <Star size={12} />
                                   </span>
                                 )}
                                 {m.editedAt && (
@@ -3495,67 +4004,88 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                       "tick" + (isRead(m) ? " read" : "")
                                     }
                                   >
-                                    ✓✓
+                                    <CheckCheck size={13} strokeWidth={2.5} />
                                   </span>
                                 )}
                               </div>
                               {!m.deleted && (
                                 <>
-                                  <button
-                                    className={
-                                      "more-button" +
-                                      (menuOpen === m._id ? " open" : "")
-                                    }
-                                    title="Actions"
-                                    onClick={() =>
-                                      setMenuOpen(
-                                        menuOpen === m._id ? null : m._id
-                                      )
+                                  <DropdownMenu
+                                    open={menuOpen === m._id}
+                                    onOpenChange={(open) =>
+                                      setMenuOpen(open ? m._id : null)
                                     }
                                   >
-                                    ⋯
-                                  </button>
-                                  {menuOpen === m._id && (
-                                    <div className="message-menu">
-                                      <button onClick={() => startReply(m)}>
-                                        ↩ Reply
-                                      </button>
+                                    <Tooltip>
+                                      <TooltipTrigger
+                                        render={
+                                          <DropdownMenuTrigger
+                                            className={
+                                              "more-button" +
+                                              (menuOpen === m._id ? " open" : "")
+                                            }
+                                            aria-label="Actions"
+                                          >
+                                            <MoreHorizontal size={16} />
+                                          </DropdownMenuTrigger>
+                                        }
+                                      />
+                                      <TooltipContent>Actions</TooltipContent>
+                                    </Tooltip>
+                                    <DropdownMenuContent
+                                      align="end"
+                                      side="bottom"
+                                      sideOffset={6}
+                                      className="min-w-44"
+                                    >
+                                      <DropdownMenuItem
+                                        onClick={() => startReply(m)}
+                                      >
+                                        <Reply size={16} /> Reply
+                                      </DropdownMenuItem>
                                       {mine && canEdit(m) && (
-                                        <button onClick={() => startEdit(m)}>
+                                        <DropdownMenuItem
+                                          onClick={() => startEdit(m)}
+                                        >
                                           Edit
-                                        </button>
+                                        </DropdownMenuItem>
                                       )}
-                                      <button
+                                      <DropdownMenuItem
                                         onClick={() => toggleStar(m)}
                                       >
-                                        {isStarred(m) ? "Unstar message" : "Star message"}
-                                      </button>
+                                        {isStarred(m)
+                                          ? "Unstar message"
+                                          : "Star message"}
+                                      </DropdownMenuItem>
                                       {canForward(m) && (
-                                        <button
+                                        <DropdownMenuItem
                                           onClick={() => {
                                             setMenuOpen(null);
                                             setForwardingMessage(m);
                                           }}
                                         >
-                                          → Forward
-                                        </button>
+                                          <Forward size={14} /> Forward
+                                        </DropdownMenuItem>
                                       )}
-                                      <button onClick={() => deleteForMe(m)}>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        onClick={() => deleteForMe(m)}
+                                      >
                                         Delete for me
-                                      </button>
+                                      </DropdownMenuItem>
                                       {mine && (
-                                        <button
-                                          className="danger"
+                                        <DropdownMenuItem
+                                          variant="destructive"
                                           onClick={() => {
                                             setMenuOpen(null);
                                             setConfirmDelete(m);
                                           }}
                                         >
                                           Delete for everyone
-                                        </button>
+                                        </DropdownMenuItem>
                                       )}
-                                    </div>
-                                  )}
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
                                   <div
                                     className={
                                       "message-actions" +
@@ -3564,43 +4094,72 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                         : "")
                                     }
                                   >
-                                    <button
-                                      className="icon-button"
-                                      title="Reply"
-                                      onClick={() => startReply(m)}
-                                    >
-                                      ↩
-                                    </button>
+                                    <Tooltip>
+                                      <TooltipTrigger
+                                        render={
+                                          <button
+                                            className="icon-button"
+                                            onClick={() => startReply(m)}
+                                          >
+                                            <Reply size={16} />
+                                          </button>
+                                        }
+                                      />
+                                      <TooltipContent>Reply</TooltipContent>
+                                    </Tooltip>
                                     {["👍", "❤️", "😂"].map((e) => (
-                                      <button
-                                        key={e}
-                                        className="icon-button"
-                                        title={`React ${e}`}
-                                        onClick={() => toggleReaction(m, e)}
-                                      >
-                                        {e}
-                                      </button>
+                                      <Tooltip key={e}>
+                                        <TooltipTrigger
+                                          render={
+                                            <button
+                                              className="icon-button"
+                                              onClick={() => toggleReaction(m, e)}
+                                            >
+                                              {e}
+                                            </button>
+                                          }
+                                        />
+                                        <TooltipContent>React {e}</TooltipContent>
+                                      </Tooltip>
                                     ))}
-                                    <button
-                                      className={
-                                        "icon-button" +
-                                        (reactionPickerFor === m._id
-                                          ? " active"
-                                          : "")
-                                      }
-                                      title="Add reaction"
-                                      onClick={() =>
-                                        setReactionPickerFor(
-                                          reactionPickerFor === m._id
-                                            ? null
-                                            : m._id
-                                        )
-                                      }
-                                    >
-                                      +
-                                    </button>
+                                    <Tooltip>
+                                      <TooltipTrigger
+                                        render={
+                                          <button
+                                            className={
+                                              "icon-button" +
+                                              (reactionPickerFor === m._id
+                                                ? " active"
+                                                : "")
+                                            }
+                                            onClick={(e) => {
+                                              if (reactionPickerFor === m._id) {
+                                                setReactionPickerFor(null);
+                                                return;
+                                              }
+                                              const areaTop =
+                                                messagesAreaRef.current?.getBoundingClientRect()
+                                                  .top ?? 0;
+                                              const btnTop =
+                                                e.currentTarget.getBoundingClientRect().top;
+                                              // ~80px needed above the tray for the picker
+                                              setReactionPickerBelow(btnTop - areaTop < 90);
+                                              setReactionPickerFor(m._id);
+                                            }}
+                                          >
+                                            +
+                                          </button>
+                                        }
+                                      />
+                                      <TooltipContent>Add reaction</TooltipContent>
+                                    </Tooltip>
                                     {reactionPickerFor === m._id && (
-                                      <div className="reaction-picker">
+                                      <div
+                                        className={
+                                          "reaction-picker" +
+                                          (reactionPickerBelow ? " below" : "")
+                                        }
+                                      >
                                         {EMOJIS.map((e) => (
                                           <button
                                             key={e}
@@ -3646,31 +4205,47 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                 </>
                               )}
                             </div>
-                          </div>
+                            </div>
+                          </motion.div>
                         </Fragment>
                       );
                     })
+                    }
+                    </>
                   )}
                   {!atBottom && (
-                    <button
-                      className="scroll-bottom"
-                      title="Jump to latest"
-                      onClick={() =>
-                        messagesAreaRef.current?.scrollTo({
-                          top: messagesAreaRef.current.scrollHeight,
-                          behavior: "smooth",
-                        })
-                      }
-                    >
-                      ↓
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            className="scroll-bottom"
+                            onClick={() =>
+                              messagesAreaRef.current?.scrollTo({
+                                top: messagesAreaRef.current.scrollHeight,
+                                behavior: "smooth",
+                              })
+                            }
+                          >
+                            ↓
+                          </button>
+                        }
+                      />
+                      <TooltipContent>Jump to latest</TooltipContent>
+                    </Tooltip>
                   )}
+                  </div>
                 </div>
 
-                {!isGroup && isProfileBlocked(other) ? (
+                {isGroup && leftGroupId === conv._id ? (
                   <div className="message-input-bar blocked-bar">
                     <span className="blocked-bar-text">
-                      🔒 You blocked this user
+                      <LogOut size={16} /> You left this group
+                    </span>
+                  </div>
+                ) : !isGroup && isProfileBlocked(other) ? (
+                  <div className="message-input-bar blocked-bar">
+                    <span className="blocked-bar-text">
+                      <Lock size={16} /> You blocked this user
                     </span>
                     <button
                       className="blocked-bar-btn"
@@ -3689,24 +4264,30 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   <>
                     {replyTarget && (
                       <div className="reply-bar">
-                        <span className="reply-bar-icon">↩</span>
+                        <span className="reply-bar-icon"><Reply size={16} /></span>
                         <div className="reply-bar-info">
                           <div className="reply-bar-name">
                             {replyTarget.sender?._id === user.id
                               ? "You"
-                              : replyTarget.sender?.username}
+                              : dn(replyTarget.sender)}
                           </div>
                           <div className="reply-bar-text">
                             {replySnippet(replyTarget)}
                           </div>
                         </div>
-                        <button
-                          className="reply-bar-close"
-                          title="Cancel reply"
-                          onClick={() => setReplyTarget(null)}
-                        >
-                          ✕
-                        </button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                className="reply-bar-close"
+                                onClick={() => setReplyTarget(null)}
+                              >
+                                <X size={14} />
+                              </button>
+                            }
+                          />
+                          <TooltipContent>Cancel reply</TooltipContent>
+                        </Tooltip>
                       </div>
                     )}
                     <form className="message-input-bar" onSubmit={handleSend}>
@@ -3716,24 +4297,34 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                           onSelect={(e) => setNewMessage((prev) => prev + e)}
                         />
                       <div className="attach-wrap">
-                        <button
-                          type="button"
-                          className={
-                            "attach-button plus-button icon-button" +
-                            (uploading ? " disabled" : "")
-                          }
-                          title="Attach"
-                          disabled={uploading}
-                          onClick={() => setAttachMenuOpen((v) => !v)}
-                        >
-                          {uploading ? "⏳" : "+"}
-                        </button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                className={
+                                  "attach-button plus-button icon-button" +
+                                  (uploading ? " disabled" : "")
+                                }
+                                disabled={uploading}
+                                onClick={() => setAttachMenuOpen((v) => !v)}
+                              >
+                                {uploading ? (
+                                  <RefreshCw size={18} className="spin" />
+                                ) : (
+                                  <Plus size={18} />
+                                )}
+                              </button>
+                            }
+                          />
+                          <TooltipContent>Attach</TooltipContent>
+                        </Tooltip>
                         {attachMenuOpen && (
                           <div className="attach-menu">
                             <label
                               className={"attach-menu-item" + (uploading ? " disabled" : "")}
                             >
-                              <span className="attach-menu-icon photo">📷</span>
+                              <span className="attach-menu-icon photo"><Image size={18} /></span>
                               Photo
                               <input
                                 type="file"
@@ -3746,7 +4337,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             <label
                               className={"attach-menu-item" + (uploading ? " disabled" : "")}
                             >
-                              <span className="attach-menu-icon video">🎥</span>
+                              <span className="attach-menu-icon video"><Video size={18} /></span>
                               Video
                               <input
                                 type="file"
@@ -3759,7 +4350,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             <label
                               className={"attach-menu-item" + (uploading ? " disabled" : "")}
                             >
-                              <span className="attach-menu-icon doc">📎</span>
+                              <span className="attach-menu-icon doc"><Paperclip size={18} /></span>
                               Document
                               <input
                                 type="file"
@@ -3791,42 +4382,63 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             {recordingPaused
                               ? "Paused — listen or resume"
                               : micSilent
-                                ? "🔇 No sound — check your mic"
+                                ? "No sound — check your mic"
                                 : recordingLocked
-                                  ? "Tap ➤ to send"
+                                  ? "Tap send to finish"
                                   : "Slide up to cancel"}
                           </span>
                           {recordingPaused && (
-                            <button
-                              type="button"
-                              className={"recording-preview" + (previewPlaying ? " playing" : "")}
-                              title="Play what you said"
-                              onClick={togglePreview}
-                            >
-                              🔊
-                            </button>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <button
+                                    type="button"
+                                    className={"recording-preview" + (previewPlaying ? " playing" : "")}
+                                    onClick={togglePreview}
+                                  >
+                                    {previewPlaying ? <Pause size={16} /> : <Play size={16} />}
+                                  </button>
+                                }
+                              />
+                              <TooltipContent>Play what you said</TooltipContent>
+                            </Tooltip>
                           )}
-                          <button
-                            type="button"
-                            className="recording-pause"
-                            title={recordingPaused ? "Resume recording" : "Pause recording"}
-                            onClick={recordingPaused ? resumeRecording : pauseRecording}
-                          >
-                            {recordingPaused ? "▶️" : "⏸"}
-                          </button>
-                          <button
-                            type="button"
-                            className="recording-cancel"
-                            title="Cancel recording"
-                            onClick={cancelRecording}
-                          >
-                            ✕
-                          </button>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <button
+                                  type="button"
+                                  className={"recording-pause" + (recordingPaused ? " resume" : "")}
+                                  onClick={recordingPaused ? resumeRecording : pauseRecording}
+                                >
+                                  {recordingPaused ? <Mic size={16} /> : <Pause size={16} />}
+                                </button>
+                              }
+                            />
+                            <TooltipContent>
+                              {recordingPaused ? "Resume recording" : "Pause recording"}
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <button
+                                  type="button"
+                                  className="recording-cancel"
+                                  onClick={cancelRecording}
+                                >
+                                  <X size={16} />
+                                </button>
+                              }
+                            />
+                            <TooltipContent>Cancel recording</TooltipContent>
+                          </Tooltip>
                           <audio ref={micPreviewAudioRef} className="recording-preview-audio" />
                         </div>
                       ) : (
-                        <input
-                          type="text"
+                        <textarea
+                          ref={chatInputRef}
+                          rows={1}
                           placeholder="Type a message..."
                           value={newMessage}
                           onChange={(e) => {
@@ -3835,27 +4447,44 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                           }}
                         />
                       )}
-                      <button
-                        className={`mic-button icon-button${recording ? " recording" : ""}`}
-                        type="button"
-                        title="Hold to record a voice message (release to send, slide up to cancel)"
-                        onPointerDown={handleMicPointerDown}
-                        onPointerMove={handleMicPointerMove}
-                        onPointerUp={handleMicPointerUp}
-                        onPointerCancel={handleMicPointerCancel}
-                      >
-                        🎤
-                      </button>
-                      <button
-                        className="send-button"
-                        type={recording ? "button" : "submit"}
-                        title={recording ? "Send voice message" : "Send"}
-                        onClick={recording ? stopRecording : undefined}
-                        disabled={!recording && !newMessage.trim()}
-                      >
-                        {recording ? "➤" : "➤"}
-                      </button>
-                    </div>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              className={`mic-button icon-button${recording ? " recording" : ""}`}
+                              type="button"
+                              onPointerDown={handleMicPointerDown}
+                              onPointerMove={handleMicPointerMove}
+                              onPointerUp={handleMicPointerUp}
+                              onPointerCancel={handleMicPointerCancel}
+                            >
+                              <Mic size={20} />
+                            </button>
+                          }
+                        />
+                        <TooltipContent>
+                          Hold to record a voice message (release to send, slide up to cancel)
+                        </TooltipContent>
+                      </Tooltip>
+                      </div>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              ref={sendButtonRef}
+                              className="send-button"
+                              type={recording ? "button" : "submit"}
+                              onClick={recording ? stopRecording : undefined}
+                              disabled={!recording && !newMessage.trim()}
+                            >
+                              <Send size={20} />
+                            </button>
+                          }
+                        />
+                        <TooltipContent>
+                          {recording ? "Send voice message" : "Send"}
+                        </TooltipContent>
+                      </Tooltip>
                   </form>
                   </>
                 )}
@@ -3871,7 +4500,11 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
           currentUser={user}
           conversationId={groupModalConversation?._id}
           onClose={() => setShowGroupModal(false)}
-          onCreate={refreshAndSelect}
+          onCreate={async (conv) => {
+            setShowGroupModal(false);
+            setNotice("Group created");
+            await refreshAndSelect(conv);
+          }}
           onAddMembers={async () => {
             setShowGroupModal(false);
             await loadConversations();
@@ -3880,10 +4513,21 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
         />
       )}
 
-      {showRequests && (
-        <div className="modal-overlay" onClick={() => setShowRequests(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Friend Requests</h3>
+      {avatarCropFile && (
+        <AvatarCropper
+          file={avatarCropFile}
+          title={avatarCropConv ? "Crop group picture" : "Crop profile picture"}
+          onCancel={() => {
+            setAvatarCropFile(null);
+            setAvatarCropConv(null);
+          }}
+          onSave={saveAvatarCrop}
+        />
+      )}
+
+        <ModalShell open={showRequests} onClose={() => setShowRequests(false)}>
+          {() => (<>
+          <h3>Friend Requests</h3>
             {friendRequests.length === 0 ? (
               <div className="empty-hint">No pending requests.</div>
             ) : (
@@ -3891,39 +4535,47 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 <div className="request-row" key={fr._id}>
                   <Avatar user={fr.requester} small />
                   <span className="request-name">
-                    {fr.requester.username}
-                    {fr.requester.handle && (
-                      <span className="user-handle"> @{fr.requester.handle}</span>
-                    )}
+                    {dn(fr.requester)}
                   </span>
-                  <button
-                    className="mini-button accept"
-                    title="Accept"
-                    onClick={() => acceptRequest(fr)}
-                  >
-                    ✓
-                  </button>
-                  <button
-                    className="mini-button decline"
-                    title="Decline"
-                    onClick={() => declineRequest(fr)}
-                  >
-                    ✕
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className="mini-button accept"
+                          onClick={() => acceptRequest(fr)}
+                        >
+                          <Check size={14} />
+                        </button>
+                      }
+                    />
+                    <TooltipContent>Accept</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className="mini-button decline"
+                          onClick={() => declineRequest(fr)}
+                        >
+                          <X size={14} />
+                        </button>
+                      }
+                    />
+                    <TooltipContent>Decline</TooltipContent>
+                  </Tooltip>
                 </div>
               ))
             )}
-          </div>
-        </div>
-      )}
+          </>
+          )}
+        </ModalShell>
 
-      {showFriends && (
-        <div className="modal-overlay" onClick={() => setShowFriends(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Friends</h3>
+        <ModalShell open={showFriends} onClose={() => setShowFriends(false)}>
+          {() => (<>
+          <h3>Friends</h3>
             {friends.length === 0 ? (
               <div className="empty-hint">
-                No friends yet. Search for a user and click ＋ to add them.
+                No friends yet. Search for a user and click + to add them.
               </div>
             ) : (
               friends.map(({ friendshipId, friend }) => (
@@ -3938,33 +4590,35 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 >
                   <Avatar user={friend} small />
                   <span className="request-name">
-                    {friend.username}
-                    {friend.handle && (
-                      <span className="user-handle"> @{friend.handle}</span>
-                    )}
+                    {dn(friend)}
                   </span>
                   {isOnline(friend._id) && <span className="online-dot" />}
-                  <button
-                    className="mini-button"
-                    title="Message"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      startConversation(friend);
-                    }}
-                  >
-                    💬
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          className="mini-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startConversation(friend);
+                          }}
+                        >
+                          <MessageCircle size={14} />
+                        </button>
+                      }
+                    />
+                    <TooltipContent>Message</TooltipContent>
+                  </Tooltip>
                 </div>
               ))
             )}
-          </div>
-        </div>
-      )}
+          </>
+          )}
+        </ModalShell>
 
-      {confirmDelete && (
-        <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Delete message?</h3>
+        <ModalShell open={confirmDelete} onClose={() => setConfirmDelete(null)}>
+          {() => (<>
+          <h3>Delete message?</h3>
             <div className="empty-hint">
               This message will be deleted for everyone in the chat. This cannot
               be undone.
@@ -3985,17 +4639,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Delete
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {confirmDeleteChat && (
-        <div
-          className="modal-overlay"
-          onClick={() => setConfirmDeleteChat(null)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Delete chat?</h3>
+        <ModalShell open={confirmDeleteChat} onClose={() => setConfirmDeleteChat(null)}>
+          {() => (<>
+          <h3>Delete chat?</h3>
             <div className="empty-hint">
               This chat and all of its messages will be deleted for everyone.
               This cannot be undone.
@@ -4016,22 +4666,157 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Delete
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {groupInfoOpen && activeConv?.type === "group" && (
-        (() => {
-          const members = activeConv.participants || [];
-          const isOwnerNow = activeConv.admin === user.id;
-          const isAdminNow = activeConv.isAdmin;
+        <ModalShell open={!!confirmLeaveGroup} onClose={() => setConfirmLeaveGroup(null)}>
+          {() => (<>
+          <h3>Leave group?</h3>
+            <div className="empty-hint">
+              You will no longer be able to send or receive messages in this
+              group. You can be added back by an admin later.
+            </div>
+            <div className="modal-actions">
+              <button
+                className="auth-button"
+                style={{ background: "var(--bg)", color: "var(--text)" }}
+                onClick={() => setConfirmLeaveGroup(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="auth-button"
+                style={{ background: "var(--danger)" }}
+                onClick={() => {
+                  const conv = confirmLeaveGroup;
+                  setConfirmLeaveGroup(null);
+                  leaveGroup(conv);
+                }}
+              >
+                Leave
+              </button>
+            </div>
+        </>
+          )}
+        </ModalShell>
+
+        <ModalShell open={!!renameConv} onClose={() => setRenameConv(null)}>
+          {() => (
+            <>
+              <h3>Rename group</h3>
+              <input
+                className="auth-input"
+                autoFocus
+                placeholder="Group name"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitRename();
+                  if (e.key === "Escape") setRenameConv(null);
+                }}
+              />
+              <div className="modal-actions">
+                <button
+                  className="auth-button"
+                  style={{ background: "var(--bg)", color: "var(--text)" }}
+                  onClick={() => setRenameConv(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="auth-button"
+                  disabled={!renameName.trim()}
+                  onClick={submitRename}
+                >
+                  Save
+                </button>
+              </div>
+            </>
+          )}
+        </ModalShell>
+
+        <ModalShell open={!!pinModal} onClose={() => setPinModal(null)} overlayClassName="modal-shell-front">
+          {() => (
+            <>
+              <h3>
+                {pinModal === "verify" && "Enter your current PIN"}
+                {pinModal === "new" && "Set a new PIN"}
+                {pinModal === "confirm" && "Confirm your PIN"}
+                {pinModal === "remove" && "Remove chat lock"}
+              </h3>
+              <input
+                className="auth-input"
+                type="password"
+                autoFocus
+                placeholder="PIN (4-6 digits)"
+                maxLength={6}
+                inputMode="numeric"
+                value={pinForm}
+                onChange={(e) => setPinForm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") continuePin();
+                  if (e.key === "Escape") setPinModal(null);
+                }}
+              />
+              <div className="modal-actions">
+                <button
+                  className="auth-button"
+                  style={{ background: "var(--bg)", color: "var(--text)" }}
+                  onClick={() => setPinModal(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="auth-button"
+                  disabled={!pinForm}
+                  onClick={continuePin}
+                >
+                  {pinModal === "remove"
+                    ? "Remove"
+                    : pinModal === "confirm"
+                      ? "Save"
+                      : "Continue"}
+                </button>
+              </div>
+            </>
+          )}
+        </ModalShell>
+
+      <ModalShell open={groupInfoOpen && activeConv?.type === "group"} onClose={() => setGroupInfoOpen(false)} className="group-info-modal">
+        {() => (<>
+        {(() => {
+          const members = activeConv?.participants || [];
+          const isOwnerNow = activeConv?.admin === user.id;
+          const isAdminNow = activeConv?.isAdmin;
 
           return (
-            <div className="modal-overlay" onClick={() => setGroupInfoOpen(false)}>
-              <div className="modal group-info-modal" onClick={(e) => e.stopPropagation()}>
-                <h3>Group info</h3>
+            <>
+              <h3>Group info</h3>
                 <div className="group-info-head">
-                  <Avatar user={{ username: activeConv.name }} />
+                  <button
+                    type="button"
+                    className="group-info-avatar"
+                    title={
+                      activeConv.avatar
+                        ? "View group picture"
+                        : "No group picture yet"
+                    }
+                    onClick={() =>
+                      activeConv.avatar &&
+                      openLightbox(
+                        SERVER_URL + activeConv.avatar,
+                        activeConv.name + " group picture"
+                      )
+                    }
+                  >
+                    <Avatar
+                      user={{
+                        username: activeConv.name,
+                        avatar: activeConv.avatar,
+                      }}
+                    />
+                  </button>
                   <div className="group-info-name">
                     {activeConv.name}
                     {(isOwnerNow || isAdminNow) && (
@@ -4044,13 +4829,37 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     )}
                   </div>
                 </div>
+                {(isOwnerNow || isAdminNow) && (
+                  <div className="group-info-actions">
+                    <label
+                      className="mini-button"
+                      title="Change group picture"
+                    >
+                      <Camera size={14} /> Change photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={handleGroupAvatarSelect}
+                      />
+                    </label>
+                    {activeConv.avatar && (
+                      <button
+                        className="mini-button decline"
+                        onClick={() => removeGroupAvatar(activeConv)}
+                      >
+                        <Trash2 size={14} /> Remove photo
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="group-info-count">
                   {members.length} members
                   <button
                     className="mini-button"
                     onClick={() => openGroupModal("add", activeConv)}
                   >
-                    ＋ Add
+                    <Plus size={12} /> Add
                   </button>
                 </div>
                 <div className="group-member-list">
@@ -4066,18 +4875,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                         <Avatar user={m} small />
                         <div className="group-member-info">
                           <div className="group-member-name">
-                            {m.username}
+                            {dn(m)}
                             {isMe && (
                               <span className="group-member-me"> (you)</span>
                             )}
                             {isMemberOwner && (
                               <span className="group-badge owner" title="Owner">
-                                👑
+                                <Crown size={12} />
                               </span>
                             )}
                             {!isMemberOwner && isMemberAdmin && (
                               <span className="group-badge" title="Admin">
-                                🛡️
+                                <Shield size={12} />
                               </span>
                             )}
                           </div>
@@ -4088,58 +4897,88 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                         {isMe ? (
                           <button
                             className="mini-button decline"
-                            onClick={() => leaveGroup(activeConv)}
+                            onClick={() => setConfirmLeaveGroup(activeConv)}
                           >
                             Leave
                           </button>
                         ) : isOwnerNow ? (
                           <div className="group-member-actions">
                             {isMemberAdmin && (
-                              <button
-                                className="mini-button"
-                                title="Remove admin"
-                                onClick={() => demoteAdmin(activeConv, m)}
-                              >
-                                ⬇
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <button
+                                      className="mini-button"
+                                      onClick={() => demoteAdmin(activeConv, m)}
+                                    >
+                                      <ArrowDown size={14} />
+                                    </button>
+                                  }
+                                />
+                                <TooltipContent>Remove admin</TooltipContent>
+                              </Tooltip>
                             )}
                             {!isMemberOwner && !isMemberAdmin && (
-                              <button
-                                className="mini-button"
-                                title="Make admin"
-                                onClick={() => promoteAdmin(activeConv, m)}
-                              >
-                                ⬆
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <button
+                                      className="mini-button"
+                                      onClick={() => promoteAdmin(activeConv, m)}
+                                    >
+                                      <ArrowUp size={14} />
+                                    </button>
+                                  }
+                                />
+                                <TooltipContent>Make admin</TooltipContent>
+                              </Tooltip>
                             )}
                             {!isMemberOwner && (
-                              <button
-                                className="mini-button"
-                                title="Transfer ownership"
-                                onClick={() => transferOwnership(activeConv, m)}
-                              >
-                                👑
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <button
+                                      className="mini-button"
+                                      onClick={() => transferOwnership(activeConv, m)}
+                                    >
+                                      <Crown size={14} />
+                                    </button>
+                                  }
+                                />
+                                <TooltipContent>Transfer ownership</TooltipContent>
+                              </Tooltip>
                             )}
                             {!isMemberOwner && (
-                              <button
-                                className="mini-button decline"
-                                title="Remove from group"
-                                onClick={() => removeMember(activeConv, m)}
-                              >
-                                ✕
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <button
+                                      className="mini-button decline"
+                                      onClick={() => removeMember(activeConv, m)}
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  }
+                                />
+                                <TooltipContent>Remove from group</TooltipContent>
+                              </Tooltip>
                             )}
                           </div>
                         ) : isAdminNow && !isMemberOwner && !isMemberAdmin ? (
                           <div className="group-member-actions">
-                            <button
-                              className="mini-button decline"
-                              title="Remove from group"
-                              onClick={() => removeMember(activeConv, m)}
-                            >
-                              ✕
-                            </button>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <button
+                                    className="mini-button decline"
+                                    onClick={() => removeMember(activeConv, m)}
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                }
+                              />
+                              <TooltipContent>Remove from group</TooltipContent>
+                            </Tooltip>
                           </div>
                         ) : null}
                       </div>
@@ -4154,19 +4993,19 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     Close
                   </button>
                 </div>
-              </div>
-            </div>
-          );
-        })()
+            </>
+        );
+      })()}
+      </>
       )}
+    </ModalShell>
 
-      {showStarredModal && (
-        <div className="modal-overlay" onClick={() => setShowStarredModal(false)}>
-          <div className="modal starred-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>⭐ Starred messages</h3>
+      <ModalShell open={showStarredModal} onClose={() => setShowStarredModal(false)} className="starred-modal">
+          {() => (<>
+          <h3><Star size={18} /> Starred messages</h3>
             {starredMessages.length === 0 ? (
               <div className="empty-hint">
-                No starred messages yet. Use the ⭐ button on a message to save it here.
+                No starred messages yet. Use the star button on a message to save it here.
               </div>
             ) : (
               <div className="starred-list">
@@ -4175,28 +5014,40 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     <Avatar user={m.sender} small />
                     <div className="starred-info">
                       <div className="starred-sender">
-                        {m.sender?._id === user.id ? "You" : m.sender?.username}
+                        {m.sender?._id === user.id ? "You" : dn(m.sender)}
                       </div>
                       <div className="starred-text">{replySnippet(m)}</div>
                     </div>
                     <span className="starred-time">{formatTime(m.createdAt)}</span>
-                    <button
-                      className="mini-button"
-                      title="Unstar"
-                      onClick={() => toggleStar(m)}
-                    >
-                      ⭐
-                    </button>
-                    <button
-                      className="mini-button"
-                      title="Jump to message"
-                      onClick={() => {
-                        setShowStarredModal(false);
-                        jumpToMessage(m._id);
-                      }}
-                    >
-                      ⤴
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            className="mini-button"
+                            onClick={() => toggleStar(m)}
+                          >
+                            <Star size={14} />
+                          </button>
+                        }
+                      />
+                      <TooltipContent>Unstar</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            className="mini-button"
+                            onClick={() => {
+                              setShowStarredModal(false);
+                              jumpToMessage(m._id);
+                            }}
+                          >
+                            ⤴
+                          </button>
+                        }
+                      />
+                      <TooltipContent>Jump to message</TooltipContent>
+                    </Tooltip>
                   </div>
                 ))}
               </div>
@@ -4209,14 +5060,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Close
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {forwardingMessage && (
-        <div className="modal-overlay" onClick={() => setForwardingMessage(null)}>
-          <div className="modal forward-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>↪ Forward message</h3>
+        <ModalShell open={forwardingMessage} onClose={() => setForwardingMessage(null)} className="forward-modal">
+          {() => (<>
+          <h3><Forward size={18} className="inline-icon" /> Forward message</h3>
             {forwardTargets.length === 0 ? (
               <div className="empty-hint">No chats to forward to.</div>
             ) : (
@@ -4232,7 +5082,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                       <Avatar
                         user={
                           c.type === "group"
-                            ? { username: c.name }
+                            ? { username: c.name, avatar: c.avatar }
                             : {
                                 username: other.username,
                                 avatar: other.avatar,
@@ -4242,7 +5092,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                         small
                       />
                       <span className="modal-user-name">
-                        {c.type === "group" ? "👥 " + c.name : other.username}
+                        {c.type === "group" ? <><Users size={14} /> {c.name}</> : dn(other)}
                       </span>
                     </button>
                   );
@@ -4257,25 +5107,45 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Cancel
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {profileUser && (
-        <div
-          className="modal-overlay"
-          onClick={() => {
+        <ModalShell
+          open={profileUser}
+          onClose={() => {
             setProfileUser(null);
             setProfileFromChat(false);
           }}
+          className="profile-modal"
         >
-          <div
-            className="modal profile-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
+          {() => (<>
             <div className="profile-hero">
-              <Avatar user={profileUser} large />
-              <div className="profile-name">{profileUser.username}</div>
+              <button
+                type="button"
+                className={
+                  "avatar-view avatar-view-large" +
+                  (profileUser.avatar ? "" : " avatar-view-empty")
+                }
+                title={
+                  profileUser.avatar
+                    ? "View profile picture"
+                    : "No profile picture"
+                }
+                onClick={() => {
+                  if (!profileUser.avatar) return;
+                  const ownId = user.id || user._id;
+                  const otherId = profileUser._id || profileUser.id;
+                  openLightbox(
+                    SERVER_URL + profileUser.avatar,
+                    (profileUser.username || "Profile") + " profile picture",
+                    { canSave: String(ownId) === String(otherId) }
+                  );
+                }}
+              >
+                <Avatar user={profileUser} large />
+              </button>
+              <div className="profile-name">{dn(profileUser)}</div>
               {profileUser.handle && (
                 <div className="profile-handle">@{profileUser.handle}</div>
               )}
@@ -4292,7 +5162,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             </div>
             <div className="profile-detail">
               <span>Status</span>
-              <div>{profileUser.status || "Hey there! I am using ChatApp."}</div>
+              <div>{profileUser.status || "Hey there! I am using बातचीत."}</div>
             </div>
             {isProfileBlocked(profileUser) && (
               <div className="profile-detail blocked-note">
@@ -4334,7 +5204,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             <span className="profile-search-sender">
                               {m.sender?._id === user.id
                                 ? "You"
-                                : m.sender?.username}
+                                : dn(m.sender)}
                             </span>
                             <span className="profile-search-snippet">
                               {highlight(snippet(m.text))}
@@ -4352,7 +5222,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 </div>
                 <div className="profile-section">
                   <div className="profile-section-title">
-                    Media shared with {profileUser.username}
+                    Media shared with {dn(profileUser)}
                     {mediaList.length > 6 && (
                       <button
                         className="mini-button"
@@ -4398,7 +5268,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             title={mediaTitle(m)}
                           >
                             <span className="profile-media-icon">
-                              {m.kind === "file" ? "📎" : "🔗"}
+                              {m.kind === "file" ? <Paperclip size={16} /> : <Link size={16} />}
                             </span>
                           </a>
                         )
@@ -4417,7 +5287,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     setProfileUser(null);
                   }}
                 >
-                  💬 Message
+                  <MessageSquare size={16} /> Message
                 </button>
               )}
               <button
@@ -4433,25 +5303,24 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     : blockUser(profileUser)
                 }
               >
-                {isProfileBlocked(profileUser) ? "Unblock" : "🚫 Block"}
+                {isProfileBlocked(profileUser) ? "Unblock" : <><Shield size={16} /> Block</>}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showThemePicker && activeConv && (
-        <div className="modal-overlay" onClick={() => setShowThemePicker(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Change chat theme</h3>
+        <ModalShell open={showThemePicker} onClose={() => setShowThemePicker(false)}>
+          {() => (<>
+          <h3>Change chat theme</h3>
             <div className="theme-swatches">
               {[
                 ["default", "Default", "var(--own-bubble)"],
-                ["blue", "Blue", "#2f6fed"],
-                ["green", "Green", "#07a35a"],
-                ["purple", "Purple", "#8e44ad"],
-                ["pink", "Pink", "#d63384"],
-                ["dark", "Dark", "#005c4b"],
+                ["blue", "Blue", "#3b82f6"],
+                ["green", "Green", "#22c55e"],
+                ["purple", "Purple", "#a855f7"],
+                ["pink", "Pink", "#ec4899"],
+                ["dark", "Dark", "#334155"],
               ].map(([value, label, color]) => (
                 <button
                   key={value}
@@ -4468,23 +5337,22 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 </button>
               ))}
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showBackgroundPicker && activeConv && (
-        <div
-          className="modal-overlay"
-          onClick={() => setShowBackgroundPicker(false)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Change chat background</h3>
+        <ModalShell open={showBackgroundPicker} onClose={() => setShowBackgroundPicker(false)}>
+          {() => (<>
+          <h3>Change chat background</h3>
             <p className="mute-picker-note">
               Pick an image from your device. It is only visible to you.
             </p>
             {activeConv.background && (
               <div className="background-preview">
-                <img src={activeConv.background} alt="Chat background preview" />
+                <img
+                  src={SERVER_URL + activeConv.background}
+                  alt="Chat background preview"
+                />
               </div>
             )}
             <label
@@ -4493,7 +5361,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 (backgroundUploading ? " disabled" : "")
               }
             >
-              {backgroundUploading ? "⏳ Uploading..." : "📤 Upload image"}
+              {backgroundUploading ? <><RefreshCw size={16} /> Uploading...</> : <><Upload size={16} /> Upload image</>}
               <input
                 type="file"
                 accept="image/*"
@@ -4511,17 +5379,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Remove background
               </button>
             )}
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showMutePicker && activeConv && (
-        <div
-          className="modal-overlay blur"
-          onClick={() => setShowMutePicker(false)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Mute notifications</h3>
+        <ModalShell open={showMutePicker} onClose={() => setShowMutePicker(false)} overlayClassName="overlay-dim">
+          {() => (<>
+          <h3>Mute notifications</h3>
             <p className="mute-picker-note">
               Stop receiving desktop notifications from this chat for a while.
             </p>
@@ -4532,7 +5396,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   muteConversation(activeConv, "8h");
                 }}
               >
-                🔕 For 8 hours
+                <BellOff size={16} />
+                For 8 hours
               </button>
               <button
                 onClick={() => {
@@ -4540,7 +5405,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   muteConversation(activeConv, "1w");
                 }}
               >
-                🔕 For 1 week
+                <BellOff size={16} />
+                For 1 week
               </button>
               <button
                 onClick={() => {
@@ -4548,20 +5414,17 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   muteConversation(activeConv, "forever");
                 }}
               >
-                🔕 Always
+                <BellOff size={16} />
+                Always
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showDisappearPicker && activeConv && (
-        <div
-          className="modal-overlay blur"
-          onClick={() => setShowDisappearPicker(false)}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Disappearing messages</h3>
+        <ModalShell open={showDisappearPicker && !!activeConv} onClose={() => setShowDisappearPicker(false)} overlayClassName="overlay-dim">
+          {() => (<>
+          <h3>Disappearing messages</h3>
             <p className="mute-picker-note">
               Messages in this chat will disappear after the selected time, for
               everyone.
@@ -4584,18 +5447,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
             </div>
             {activeConv.disappearTime > 0 && (
               <p className="mute-picker-note" style={{ marginTop: 10 }}>
-                ⏳ Currently active — new and existing messages disappear after{" "}
+                <Timer size={14} /> Currently active — new and existing
+                messages disappear after{" "}
                 {formatDisappear(activeConv.disappearTime)}.
               </p>
             )}
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showPollModal && (
-        <div className="modal-overlay" onClick={() => setShowPollModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Create poll</h3>
+        <ModalShell open={showPollModal} onClose={() => setShowPollModal(false)}>
+          {() => (<>
+          <h3>Create poll</h3>
             <input
               className="poll-question-input"
               type="text"
@@ -4618,17 +5481,23 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     }}
                   />
                   {pollOptions.length > 2 && (
-                    <button
-                      className="mini-button"
-                      title="Remove option"
-                      onClick={() =>
-                        setPollOptions(
-                          pollOptions.filter((_, j) => j !== i)
-                        )
-                      }
-                    >
-                      ✕
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            className="mini-button"
+                            onClick={() =>
+                              setPollOptions(
+                                pollOptions.filter((_, j) => j !== i)
+                              )
+                            }
+                          >
+                            <X size={14} />
+                          </button>
+                        }
+                      />
+                      <TooltipContent>Remove option</TooltipContent>
+                    </Tooltip>
                   )}
                 </div>
               ))}
@@ -4639,9 +5508,17 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 style={{ background: "var(--bg)", color: "var(--text)" }}
                 onClick={() => setPollOptions([...pollOptions, ""])}
               >
-                ＋ Add option
+                <Plus size={14} /> Add option
               </button>
             )}
+            <label className="poll-multi-toggle">
+              <input
+                type="checkbox"
+                checked={pollMulti}
+                onChange={(e) => setPollMulti(e.target.checked)}
+              />
+              <span>Allow multiple answers</span>
+            </label>
             <div className="modal-actions">
               <button
                 className="auth-button"
@@ -4654,22 +5531,27 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Send
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {pendingMedia && (
-        <div className="modal-overlay" onClick={() => setPendingMedia(null)}>
-          <div className="modal media-send-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="media-send-header">
+        <ModalShell open={pendingMedia} onClose={() => setPendingMedia(null)} className="media-send-modal">
+          {() => (<>
+          <div className="media-send-header">
               <h3>{pendingMedia.mimeType.startsWith("image/") ? "Photo" : "Video"}</h3>
-              <button
-                className="view-once-close"
-                title="Cancel"
-                onClick={() => setPendingMedia(null)}
-              >
-                ✕
-              </button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      className="view-once-close"
+                      onClick={() => setPendingMedia(null)}
+                    >
+                      <X size={18} />
+                    </button>
+                  }
+                />
+                <TooltipContent>Cancel</TooltipContent>
+              </Tooltip>
             </div>
             {pendingMedia.mimeType.startsWith("image/") ? (
               <img
@@ -4693,13 +5575,12 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Send as view once
               </button>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {lightbox && (
-        <div className="modal-overlay lightbox-overlay" onClick={() => setLightbox(null)}>
-          <div className="lightbox" onClick={(e) => e.stopPropagation()}>
+        <ModalShell open={lightbox} onClose={() => setLightbox(null)} overlayClassName="lightbox-overlay" className="lightbox">
+          {() => (<>
             <div
               ref={lightboxStageRef}
               className={`lightbox-stage${(lightbox.zoom || 1) > 1 ? " zoomed" : ""}`}
@@ -4708,83 +5589,116 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
               onPointerMove={onLightboxPointerMove}
               onPointerUp={onLightboxPointerUp}
               onPointerCancel={onLightboxPointerUp}
+              onContextMenu={
+                lightbox.canSave === false ? (e) => e.preventDefault() : undefined
+              }
             >
               <img
                 ref={lightboxImgRef}
                 src={lightbox.url}
                 alt={lightbox.name}
                 draggable={false}
+                onContextMenu={
+                  lightbox.canSave === false ? (e) => e.preventDefault() : undefined
+                }
                 style={{
                   transform: `translate(${lightbox.pan?.x || 0}px, ${
                     lightbox.pan?.y || 0
                   }px) scale(${lightbox.zoom || 1})`,
+                  ...(lightbox.canSave === false
+                    ? { WebkitUserDrag: "none", userSelect: "none" }
+                    : {}),
                 }}
               />
             </div>
             <div className="lightbox-actions">
               <div className="lightbox-zoom-controls">
-                <button
-                  className="lightbox-zoom-btn"
-                  title="Zoom out"
-                  disabled={(lightbox.zoom || 1) <= 1}
-                  onClick={() => zoomLightboxBy(-1)}
-                >
-                  −
-                </button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        className="lightbox-zoom-btn"
+                        disabled={(lightbox.zoom || 1) <= 1}
+                        onClick={() => zoomLightboxBy(-1)}
+                      >
+                        <Minus size={16} />
+                      </button>
+                    }
+                  />
+                  <TooltipContent>Zoom out</TooltipContent>
+                </Tooltip>
                 <span className="lightbox-zoom-level">
                   {Math.round((lightbox.zoom || 1) * 100)}%
                 </span>
-                <button
-                  className="lightbox-zoom-btn"
-                  title="Zoom in"
-                  disabled={(lightbox.zoom || 1) >= 5}
-                  onClick={() => zoomLightboxBy(1)}
-                >
-                  +
-                </button>
-                <button
-                  className="lightbox-zoom-btn lightbox-zoom-reset"
-                  title="Reset zoom"
-                  onClick={resetLightboxZoom}
-                >
-                  ⟲
-                </button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        className="lightbox-zoom-btn"
+                        disabled={(lightbox.zoom || 1) >= 5}
+                        onClick={() => zoomLightboxBy(1)}
+                      >
+                        <Plus size={16} />
+                      </button>
+                    }
+                  />
+                  <TooltipContent>Zoom in</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        className="lightbox-zoom-btn lightbox-zoom-reset"
+                        onClick={resetLightboxZoom}
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    }
+                  />
+                  <TooltipContent>Reset zoom</TooltipContent>
+                </Tooltip>
               </div>
-              <button
-                className="auth-button lightbox-save"
-                onClick={() => downloadFile(lightbox.url, lightbox.name)}
-              >
-                ⬇ Save
-              </button>
-              <button
-                className="lightbox-close"
-                title="Close"
-                onClick={() => setLightbox(null)}
-              >
-                ✕
-              </button>
+              {lightbox.canSave !== false && (
+                <button
+                  className="auth-button lightbox-save"
+                  onClick={() => downloadFile(lightbox.url, lightbox.name)}
+                >
+                  <Download size={14} /> Save
+                </button>
+              )}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      className="lightbox-close"
+                      onClick={() => setLightbox(null)}
+                    >
+                      <X size={18} />
+                    </button>
+                  }
+                />
+                <TooltipContent>Close</TooltipContent>
+              </Tooltip>
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {viewOnceMedia && (
-        <div
-          className="modal-overlay"
-          onClick={() => setViewOnceMedia(null)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setViewOnceMedia(null);
-          }}
-        >
-          <div className="view-once-viewer" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="view-once-close"
-              title="Close"
-              onClick={() => setViewOnceMedia(null)}
-            >
-              ✕
-            </button>
+        <ModalShell open={viewOnceMedia} onClose={() => setViewOnceMedia(null)} className="view-once-viewer">
+          {() => (<>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    className="view-once-close"
+                    onClick={() => setViewOnceMedia(null)}
+                  >
+                    ✕
+                  </button>
+                }
+              />
+              <TooltipContent>Close</TooltipContent>
+            </Tooltip>
             {viewOnceMedia.isVideo ? (
               <video
                 src={viewOnceMedia.url}
@@ -4805,29 +5719,32 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 ? "This video can only be viewed once."
                 : "This photo can only be viewed once."}
             </div>
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showMediaModal && activeConv && (
-        <div className="modal-overlay" onClick={() => setShowMediaModal(false)}>          <div
-            className="modal media-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <ModalShell open={showMediaModal} onClose={() => setShowMediaModal(false)} className="media-modal">
+          {() => (<>
             <div className="media-modal-header">
               <h3>
                 {activeConv.type === "group"
                   ? activeConv.name
-                  : otherUser(activeConv).username}{" "}
+                  : dn(otherUser(activeConv)) || "Chat"}{" "}
                 · Media, files &amp; links
               </h3>
-              <button
-                className="msg-search-close"
-                title="Close"
-                onClick={() => setShowMediaModal(false)}
-              >
-                ✕
-              </button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      className="msg-search-close"
+                      onClick={() => setShowMediaModal(false)}
+                    >
+                      ✕
+                    </button>
+                  }
+                />
+                <TooltipContent>Close</TooltipContent>
+              </Tooltip>
             </div>
             {mediaList.length === 0 ? (
               <div className="empty-hint">Nothing shared yet.</div>
@@ -4891,7 +5808,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             target="_blank"
                             rel="noreferrer"
                           >
-                            <span className="media-row-icon">📎</span>
+                            <span className="media-row-icon"><Paperclip size={16} /></span>
                             <span className="media-row-name">
                               {m.file?.name || "File"}
                             </span>
@@ -4917,7 +5834,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                             target="_blank"
                             rel="noreferrer"
                           >
-                            <span className="media-row-icon">🔗</span>
+                            <span className="media-row-icon"><Link size={16} /></span>
                             <span className="media-row-name">{m.text}</span>
                             <span className="media-row-meta">
                               {formatListTime(m.createdAt)}
@@ -4929,17 +5846,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 )}
               </div>
             )}
-          </div>
-        </div>
-      )}
+        </>
+          )}
+        </ModalShell>
 
-      {showSettings && (
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div
-            className="modal settings-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3>Settings</h3>
+        <ModalShell open={showSettings} onClose={() => setShowSettings(false)} className="settings-modal">
+          {() => (<>
+          <h3>Settings</h3>
             <div className="settings-section">
               <div className="settings-label">Appearance</div>
               <div className="theme-options">
@@ -4947,83 +5860,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   className={"theme-option" + (dark ? "" : " active")}
                   onClick={() => dark && onToggleTheme()}
                 >
-                  ☀️ Light
+                  <Sun size={16} /> Light
                 </button>
                 <button
                   className={"theme-option" + (dark ? " active" : "")}
                   onClick={() => !dark && onToggleTheme()}
                 >
-                  🌙 Dark
+                  <Moon size={16} /> Dark
                 </button>
               </div>
-            </div>
-            <div className="settings-section">
-              <div className="settings-label">Profile</div>
-              <div className="settings-row">
-                <Avatar user={user} small />
-                <div className="settings-sub">
-                  <div>
-                    {user.username}
-                    {user.handle && (
-                      <span className="user-handle"> @{user.handle}</span>
-                    )}
-                  </div>
-                  <div className="settings-status">
-                    {user.status || "Hey there! I am using ChatApp."}
-                  </div>
-                </div>
-                <button className="mini-button" onClick={openEditProfile}>
-                  Edit
-                </button>
-              </div>
-              {editProfileOpen && (
-                <div className="edit-profile-form">
-                  <label>
-                    <span>Username</span>
-                    <input
-                      type="text"
-                      value={editUsername}
-                      maxLength={20}
-                      onChange={(e) => setEditUsername(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>Handle</span>
-                    <input
-                      type="text"
-                      value={editHandle}
-                      maxLength={20}
-                      placeholder="name"
-                      onChange={(e) => setEditHandle(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>Status</span>
-                    <input
-                      type="text"
-                      value={editStatus}
-                      maxLength={100}
-                      placeholder="Hey there! I am using ChatApp."
-                      onChange={(e) => setEditStatus(e.target.value)}
-                    />
-                  </label>
-                  <div className="edit-profile-actions">
-                    <button
-                      className="mini-button"
-                      onClick={() => setEditProfileOpen(false)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className="mini-button accept"
-                      onClick={saveProfile}
-                      disabled={savingProfile}
-                    >
-                      {savingProfile ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
             <div className="settings-section">
               <div className="settings-label">Privacy</div>
@@ -5041,18 +5886,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     <button className="mini-button" onClick={lockNow}>
                       Lock now
                     </button>
-                    <button className="mini-button" onClick={setChatPin}>
+                    <button className="mini-button" onClick={openSetPin}>
                       Change PIN
                     </button>
                     <button
                       className="mini-button decline"
-                      onClick={removeChatPin}
+                      onClick={openRemovePin}
                     >
                       Remove
                     </button>
                   </div>
                 ) : (
-                  <button className="mini-button" onClick={setChatPin}>
+                  <button className="mini-button" onClick={openSetPin}>
                     Set PIN
                   </button>
                 )}
@@ -5087,10 +5932,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                     <Avatar user={bu} small />
                     <div className="settings-sub">
                       <div>
-                        {bu.username}
-                        {bu.handle && (
-                          <span className="user-handle"> @{bu.handle}</span>
-                        )}
+                        {dn(bu)}
                       </div>
                       {bu.status && <div>{bu.status}</div>}
                     </div>
@@ -5150,14 +5992,171 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 Logout
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+          )}
+        </ModalShell>
+
+        <ModalShell
+          open={showMyProfile}
+          onClose={() => {
+            setShowMyProfile(false);
+            setShowEditProfile(false);
+          }}
+          className="profile-modal"
+        >
+          {() => (<>
+            <div className="profile-hero">
+              <button
+                type="button"
+                className={
+                  "avatar-view avatar-view-large" +
+                  (user.avatar ? "" : " avatar-view-empty")
+                }
+                title={
+                  user.avatar
+                    ? "View profile picture"
+                    : "No profile picture yet"
+                }
+                onClick={() =>
+                  user.avatar &&
+                  openLightbox(
+                    SERVER_URL + user.avatar,
+                    (user.username || "Profile") + " profile picture"
+                  )
+                }
+              >
+                <Avatar user={user} large />
+              </button>
+              <div className="profile-name">{dn(user)}</div>
+              <div className="profile-status">
+                {user.status || "Hey there! I am using बातचीत."}
+              </div>
+            </div>
+            {user.avatar && (
+              <div className="profile-detail">
+                <span>Profile picture</span>
+                <div className="profile-detail-actions">
+                  <label
+                    className="mini-button"
+                    title="Upload a new profile picture"
+                  >
+                    Change photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={handleAvatarSelect}
+                    />
+                  </label>
+                  <button
+                    className="mini-button decline"
+                    onClick={handleAvatarRemove}
+                    disabled={savingProfile}
+                  >
+                    Remove photo
+                  </button>
+                </div>
+              </div>
+            )}
+            {!user.avatar && (
+              <div className="profile-detail">
+                <span>Profile picture</span>
+                <div className="profile-detail-actions">
+                  <label
+                    className="mini-button"
+                    title="Upload a profile picture"
+                  >
+                    Add photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={handleAvatarSelect}
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+            <div className="profile-detail">
+              <span>Status</span>
+              <div>{user.status || "Hey there! I am using बातचीत."}</div>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="auth-button"
+                onClick={() => {
+                  setShowMyProfile(false);
+                  openEditProfile();
+                }}
+              >
+                Edit profile
+              </button>
+            </div>
+          </>
+          )}
+        </ModalShell>
+
+        <ModalShell
+          open={showEditProfile}
+          onClose={() => setShowEditProfile(false)}
+          className="edit-profile-modal"
+        >
+          {() => (<>
+            <h3>Edit profile</h3>
+            <div className="edit-profile-form">
+              <label>
+                <span>Username</span>
+                <input
+                  type="text"
+                  value={editUsername}
+                  maxLength={20}
+                  onChange={(e) => setEditUsername(e.target.value)}
+                />
+              </label>
+              <label>
+                <span>Handle</span>
+                <input
+                  type="text"
+                  value={editHandle}
+                  maxLength={20}
+                  placeholder="name"
+                  onChange={(e) => setEditHandle(e.target.value)}
+                />
+              </label>
+              <label>
+                <span>Status</span>
+                <input
+                  type="text"
+                  value={editStatus}
+                  maxLength={100}
+                  placeholder="Hey there! I am using बातचीत."
+                  onChange={(e) => setEditStatus(e.target.value)}
+                />
+              </label>
+              <div className="edit-profile-actions">
+                <button
+                  className="mini-button"
+                  onClick={() => setShowEditProfile(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="mini-button accept"
+                  onClick={saveProfile}
+                  disabled={savingProfile}
+                >
+                  {savingProfile ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </div>
+          </>
+          )}
+        </ModalShell>
 
       {locked && (
         <div className="lock-overlay">
           <div className="lock-card">
-            <div className="lock-icon">🔒</div>
+            <div className="lock-icon"><Lock size={48} /></div>
             <h2>Chat Locked</h2>
             <p>Enter your PIN to continue</p>
             <input

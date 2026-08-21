@@ -116,6 +116,7 @@ router.post("/", authMiddleware, async (req, res, next) => {
         ? {
             poll: {
               question: (poll.question || "").trim(),
+              multi: !!poll.multi,
               options: (poll.options || [])
                 .map((o) =>
                   o && o.text ? String(o.text).trim() : ""
@@ -286,12 +287,22 @@ router.get("/:conversationId", authMiddleware, async (req, res, next) => {
       });
     }
 
-    const messages = await Message.find({
+    // Pagination: latest `limit` messages, or the `limit` older than the
+    // `before` cursor (an ObjectId). One extra row tells us if more exist.
+    const PAGE = Math.min(Math.max(parseInt(req.query.limit, 10) || 60, 1), 200);
+    const before = req.query.before;
+
+    const baseFilter = {
       conversationId: req.params.conversationId,
       deletedFor: { $nin: [req.user.id] },
       // Skip messages that already self-destructed (disappearing chats)
       $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
-    })
+    };
+    if (before) {
+      baseFilter._id = { $lt: before };
+    }
+
+    const fetched = await Message.find(baseFilter)
       .populate("sender", "username avatar handle status")
       .populate("reactions.user", "username avatar handle status")
       .populate({
@@ -302,9 +313,13 @@ router.get("/:conversationId", authMiddleware, async (req, res, next) => {
         path: "forwardedFrom",
         populate: { path: "sender", select: "username avatar handle status" },
       })
-      .sort({ createdAt: 1 });
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(PAGE + 1);
 
-    res.json(messages);
+    const hasMore = fetched.length > PAGE;
+    const messages = (hasMore ? fetched.slice(0, PAGE) : fetched).reverse();
+
+    res.json({ messages, hasMore });
   } catch (error) {
     next(error);
   }
@@ -567,14 +582,23 @@ router.post("/:id/vote", authMiddleware, async (req, res, next) => {
       (v) => v.toString() === req.user.id
     );
 
-    // Remove the user's vote from every option...
-    message.poll.options.forEach((o) => {
-      o.votes = (o.votes || []).filter((v) => v.toString() !== req.user.id);
-    });
+    if (message.poll.multi) {
+      // Multiple answers allowed: only toggle the clicked option.
+      options[optionIndex].votes = hadVoted
+        ? (options[optionIndex].votes || []).filter(
+            (v) => v.toString() !== req.user.id
+          )
+        : [...(options[optionIndex].votes || []), req.user.id];
+    } else {
+      // Single answer: remove the user's vote from every option...
+      message.poll.options.forEach((o) => {
+        o.votes = (o.votes || []).filter((v) => v.toString() !== req.user.id);
+      });
 
-    // ...then add it back unless they were just removing their vote.
-    if (!hadVoted) {
-      options[optionIndex].votes.push(req.user.id);
+      // ...then add it back unless they were just removing their vote.
+      if (!hadVoted) {
+        options[optionIndex].votes.push(req.user.id);
+      }
     }
 
     await message.save();

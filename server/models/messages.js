@@ -107,6 +107,7 @@ const messageSchema = new mongoose.Schema(
         // Poll data (for type "poll" messages)
         poll: {
             question: { type: String, trim: true, default: "" },
+            multi: { type: Boolean, default: false },
             options: [
                 {
                     text: { type: String, trim: true, default: "" },

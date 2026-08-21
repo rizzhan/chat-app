@@ -1,12 +1,13 @@
 import axios from "axios";
 
-// Where the backend lives. Used for file URLs like http://localhost:5000/uploads/...
-export const SERVER_URL = "http://localhost:5000";
+// Where the backend lives. Override with VITE_SERVER_URL in production.
+// e.g. VITE_SERVER_URL=https://api.yourdomain.com
+export const SERVER_URL = (import.meta.env.VITE_SERVER_URL || "http://localhost:5000").replace(/\/$/, "");
 
 // One place for all backend calls.
 // baseURL points at our Express server.
 const api = axios.create({
-  baseURL: "http://localhost:5000/api",
+  baseURL: `${SERVER_URL}/api`,
 });
 
 // Runs before every request: adds your saved token automatically.

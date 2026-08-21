@@ -157,6 +157,7 @@ const initSocket = (server) => {
             ? {
                 poll: {
                   question: (poll.question || "").trim(),
+                  multi: !!poll.multi,
                   options: (poll.options || [])
                     .map((o) => (o && o.text ? String(o.text).trim() : ""))
                     .filter(Boolean)

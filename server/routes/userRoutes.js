@@ -36,10 +36,15 @@ router.post(
 // Email is deliberately not editable here (and never exposed publicly).
 router.patch("/me", authMiddleware, async (req, res, next) => {
   try {
-    const { username, handle, status } = req.body;
+    const { username, handle, status, avatar } = req.body;
     const user = await User.findById(req.user.id);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    if (avatar !== undefined) {
+      // Allows removing the profile picture by sending avatar: "".
+      user.avatar = String(avatar).trim();
     }
 
     if (username !== undefined) {
@@ -119,10 +124,14 @@ router.get("/search", authMiddleware, async (req, res, next) => {
     const term = username.trim();
     const handleTerm = term.replace(/^@/, "");
 
+    // Escape user input so regex metacharacters (e.g. '.') don't match
+    // unintended patterns in username or handle fields.
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
     const users = await User.find({
       $or: [
-        { username: { $regex: term, $options: "i" } },
-        { handle: { $regex: handleTerm, $options: "i" } },
+        { username: { $regex: escapeRegex(term), $options: "i" } },
+        { handle: { $regex: escapeRegex(handleTerm), $options: "i" } },
       ],
       _id: { $ne: req.user.id },
     })

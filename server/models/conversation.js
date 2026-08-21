@@ -16,6 +16,12 @@ const conversationSchema = new mongoose.Schema(
             default: "",
         },
 
+        // Group picture (empty for private chats / no picture)
+        avatar: {
+            type: String,
+            default: "",
+        },
+
         // Who created the group (can remove members / change admins)
         admin: {
             type: mongoose.Schema.Types.ObjectId,

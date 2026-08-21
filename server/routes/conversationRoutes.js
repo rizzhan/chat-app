@@ -3,6 +3,7 @@ const router = express.Router();
 const mongoose = require("mongoose");
 
 const authMiddleware = require("../middleware/authmiddleware");
+const upload = require("../middleware/upload");
 const Conversation = require("../models/conversation");
 const Message = require("../models/messages");
 const { isBlockedPair } = require("../utils/blocked");
@@ -383,6 +384,87 @@ router.put("/:conversationId/name", authMiddleware, async (req, res, next) => {
     }
 
     conversation.name = name.trim();
+    await conversation.save();
+
+    const populated = await Conversation.findById(conversation._id)
+      .populate("participants", "username avatar handle status")
+      .populate("lastMessage");
+
+    req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+      conversationId: conversation._id.toString(),
+    });
+
+    res.json(enrich([populated], {}, req.user.id)[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Change a group's picture (owner or admin)
+router.post(
+  "/:conversationId/avatar",
+  authMiddleware,
+  upload.single("file"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      const conversation = await Conversation.findById(req.params.conversationId);
+
+      if (!conversation) {
+        return res.status(404).json({ message: "Conversation not found" });
+      }
+
+      if (conversation.type !== "group") {
+        return res.status(400).json({ message: "Not a group conversation" });
+      }
+
+      if (!isAdminUser(conversation, req.user.id)) {
+        return res.status(403).json({
+          message: "Only group admins can change the group picture",
+        });
+      }
+
+      conversation.avatar = `/uploads/${req.file.filename}`;
+      await conversation.save();
+
+      const populated = await Conversation.findById(conversation._id)
+        .populate("participants", "username avatar handle status")
+        .populate("lastMessage");
+
+      req.io?.to(conversation._id.toString()).emit("conversation-updated", {
+        conversationId: conversation._id.toString(),
+      });
+
+      res.json(enrich([populated], {}, req.user.id)[0]);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Remove a group's picture (owner or admin)
+router.delete("/:conversationId/avatar", authMiddleware, async (req, res, next) => {
+  try {
+    const conversation = await Conversation.findById(req.params.conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (conversation.type !== "group") {
+      return res.status(400).json({ message: "Not a group conversation" });
+    }
+
+    if (!isAdminUser(conversation, req.user.id)) {
+      return res.status(403).json({
+        message: "Only group admins can change the group picture",
+      });
+    }
+
+    conversation.avatar = "";
     await conversation.save();
 
     const populated = await Conversation.findById(conversation._id)

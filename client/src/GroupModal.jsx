@@ -1,8 +1,12 @@
 import { useState } from "react";
 import api from "./api";
 import Avatar from "./Avatar";
+import ModalShell from "./components/ModalShell";
+import { X, Check, Plus } from "lucide-react";
 
 function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAddMembers }) {
+  const dn = (u) => (u?.handle ? `@${u.handle}` : u?.username || "Unknown");
+
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]);
@@ -74,8 +78,7 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <ModalShell open onClose={onClose}>
         <h3>{mode === "create" ? "New Group" : "Add Members"}</h3>
 
         {mode === "create" && (
@@ -89,7 +92,7 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
 
         <input
           className="auth-input"
-          placeholder="Search users..."
+          placeholder="Search by name or @handle"
           value={search}
           onChange={handleSearch}
         />
@@ -102,7 +105,7 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
                 key={u._id}
                 onClick={() => toggle(u)}
               >
-                {u.username} ✕
+                {dn(u)} <X size={12} />
               </span>
             ))}
           </div>
@@ -119,10 +122,9 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
               >
                 <Avatar user={u} small />
                 <span className="modal-user-name">
-                  {u.username}
-                  {u.handle && <span className="user-handle"> @{u.handle}</span>}
+                  {dn(u)}
                 </span>
-                <span>{isSel ? "✓" : "+"}</span>
+                <span>{isSel ? <Check size={16} /> : <Plus size={16} />}</span>
               </button>
             );
           })}
@@ -143,8 +145,7 @@ function GroupModal({ mode, currentUser, conversationId, onClose, onCreate, onAd
                 : "Add Members"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
