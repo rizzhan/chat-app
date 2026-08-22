@@ -2723,7 +2723,7 @@ body.modal-open .chat-main {
   border: 1px solid var(--border);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-lg);
-  z-index: 30;
+  z-index: 999;
 }
 
 /* Hover bridge: the tray floats 4px above the bubble; this invisible strip
@@ -2780,7 +2780,8 @@ body.modal-open .chat-main {
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  z-index: 50;
+  z-index: 1000;
+  isolation: isolate;
   animation: slideUp var(--transition-normal) ease-out;
 }
 
@@ -2803,14 +2804,22 @@ body.modal-open .chat-main {
   pointer-events: auto;
 }
 .message.picker-open {
-  z-index: 100;
+  z-index: 1000;
   isolation: isolate;
+}
+.message.picker-open .message-bubble {
+  z-index: 1001;
 }
 .message.picker-open .poll-card,
 .message.picker-open .poll-option,
 .message.picker-open .poll-option:hover {
   pointer-events: none;
   transform: none !important;
+  z-index: 0 !important;
+}
+.message.picker-open .poll-option-text,
+.message.picker-open .poll-option-meta {
+  z-index: 0 !important;
 }
 /* Any other message while a picker is open should not show its hover tray */
 .messages-thread:has(.reaction-picker) .message:not(.picker-open) .message-actions {
