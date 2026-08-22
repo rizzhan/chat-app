@@ -2831,6 +2831,11 @@ body.modal-open .chat-main {
 .messages-thread:has(.reaction-picker) .poll-card {
   pointer-events: none;
 }
+.messages-thread:has(.reaction-picker) .poll-option-text,
+.messages-thread:has(.reaction-picker) .poll-option-meta {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
 
 /* ---------- Reaction chips ---------- */
 .reaction-row {
