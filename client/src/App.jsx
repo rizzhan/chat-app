@@ -7,54 +7,36 @@ import { motion, AnimatePresence } from "motion/react";
 const ChatPage = lazy(() => import("./ChatPage"));
 const AuthPage = lazy(() => import("./AuthPage"));
 
-function BootScreen({ progress, dark }) {
+function BootScreen({ progress }) {
   return (
     <motion.div
-      className="app-boot"
+      className="app-boot app-boot-discord"
       initial={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
     >
-      <div className="boot-bg" aria-hidden>
-        <div className="boot-orb boot-orb-a" />
-        <div className="boot-orb boot-orb-b" />
-        <div className="boot-grid" />
-        <div className="boot-particles">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <span key={i} className="boot-particle" style={{ "--x": `${(i * 29) % 100}%`, "--d": `${(i * 0.9) % 5}s` }} />
-          ))}
-        </div>
-      </div>
+      <div className="boot-discord-bg" aria-hidden />
 
       <motion.div
-        className="boot-card"
-        initial={{ scale: 0.96, y: 10, opacity: 0 }}
-        animate={{ scale: 1, y: 0, opacity: 1 }}
-        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+        className="boot-discord-center"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
       >
-        <div className="boot-logo-wrap">
-          <div className="boot-ring" />
-          <div className="boot-ring boot-ring-2" />
-          <div className="boot-logo">बातचीत</div>
-        </div>
-        <div className="boot-title">बातचीत</div>
-        <div className="boot-subtitle">warming up your chats…</div>
-
-        <div className="boot-bar">
-          <motion.div
-            className="boot-bar-fill"
-            initial={{ width: "0%" }}
-            animate={{ width: `${progress}%` }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-          />
-          <div className="boot-bar-glow" style={{ left: `${progress}%` }} />
-        </div>
-        <div className="boot-percent">{Math.round(progress)}%</div>
-
-        <div className="boot-dots">
+        <div className="boot-discord-logo">बातचीत</div>
+        <div className="boot-discord-dots" aria-hidden>
           <span /><span /><span />
         </div>
+        <div className="boot-discord-tip">Preloading your chats…</div>
       </motion.div>
+      <div className="boot-discord-bar" aria-hidden>
+        <motion.div
+          className="boot-discord-fill"
+          initial={{ width: "0%" }}
+          animate={{ width: `${progress}%` }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+        />
+      </div>
     </motion.div>
   );
 }
@@ -292,7 +274,7 @@ function App() {
     <TooltipProvider>
       <AnimatePresence mode="wait">
         {booting ? (
-          <BootScreen key="boot" progress={bootProgress} dark={dark} />
+          <BootScreen key="boot" progress={bootProgress} />
         ) : loggedIn ? (
           <Suspense
             key="chat"
