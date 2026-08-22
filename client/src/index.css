@@ -2804,10 +2804,12 @@ body.modal-open .chat-main {
   pointer-events: auto;
 }
 .message.picker-open {
+  position: relative;
   z-index: 1000;
   isolation: isolate;
 }
 .message.picker-open .message-bubble {
+  position: relative;
   z-index: 1001;
 }
 .message.picker-open .poll-card,
@@ -2815,13 +2817,6 @@ body.modal-open .chat-main {
 .message.picker-open .poll-option:hover {
   pointer-events: none;
   transform: none !important;
-  z-index: 0 !important;
-}
-.message.picker-open .poll-option-text,
-.message.picker-open .poll-option-meta {
-  z-index: 0 !important;
-  opacity: 0 !important;
-  visibility: hidden !important;
 }
 /* Any other message while a picker is open should not show its hover tray */
 .messages-thread:has(.reaction-picker) .message:not(.picker-open) .message-actions {
@@ -2830,11 +2825,6 @@ body.modal-open .chat-main {
 .messages-thread:has(.reaction-picker) .poll-option,
 .messages-thread:has(.reaction-picker) .poll-card {
   pointer-events: none;
-}
-.messages-thread:has(.reaction-picker) .poll-option-text,
-.messages-thread:has(.reaction-picker) .poll-option-meta {
-  opacity: 0 !important;
-  visibility: hidden !important;
 }
 
 /* ---------- Reaction chips ---------- */
