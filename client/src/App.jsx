@@ -1,11 +1,10 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import api, { SERVER_URL } from "./api";
 import { motion, AnimatePresence } from "motion/react";
-
-const ChatPage = lazy(() => import("./ChatPage"));
-const AuthPage = lazy(() => import("./AuthPage"));
+import ChatPage from "./ChatPage";
+import AuthPage from "./AuthPage";
 
 function BootScreen({ progress }) {
   return (
@@ -276,13 +275,11 @@ function App() {
         {booting ? (
           <BootScreen key="boot" progress={bootProgress} />
         ) : loggedIn ? (
-          <Suspense
+          <motion.div
             key="chat"
-            fallback={
-              <div className="app-loading">
-                <div className="app-loading-title">बातचीत</div>
-              </div>
-            }
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.25 }}
           >
             <ChatPage
               user={user}
@@ -291,18 +288,16 @@ function App() {
               dark={dark}
               onToggleTheme={() => setDark((d) => !d)}
             />
-          </Suspense>
+          </motion.div>
         ) : (
-          <Suspense
+          <motion.div
             key="auth"
-            fallback={
-              <div className="app-loading">
-                <div className="app-loading-title">बातचीत</div>
-              </div>
-            }
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.25 }}
           >
             <AuthPage onAuth={handleAuth} dark={dark} onToggleTheme={() => setDark((d) => !d)} />
-          </Suspense>
+          </motion.div>
         )}
       </AnimatePresence>
       <Toaster position="bottom-right" richColors closeButton />
