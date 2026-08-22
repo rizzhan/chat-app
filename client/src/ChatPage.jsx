@@ -3915,7 +3915,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                               (isGroup && !mine ? " group" : "") +
                               (!groupStart ? " grouped" : "") +
                               (groupStart ? " group-start" : "") +
-                              (groupEnd ? " group-end" : "")
+                              (groupEnd ? " group-end" : "") +
+                              (reactionPickerFor === m._id ? " picker-open" : "")
                             }
                             initial={{ opacity: 0, y: 12, scale: 0.98 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}

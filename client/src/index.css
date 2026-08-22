@@ -2797,6 +2797,18 @@ body.modal-open .chat-main {
   top: calc(100% + 6px);
 }
 
+/* When the emoji picker is open, it should own the hover — don't let the
+   poll card underneath steal pointer events through the gaps. */
+.reaction-picker {
+  pointer-events: auto;
+}
+.message.picker-open .poll-card,
+.message.picker-open .poll-option,
+.message.picker-open .poll-option:hover {
+  pointer-events: none;
+  transform: none !important;
+}
+
 /* ---------- Reaction chips ---------- */
 .reaction-row {
   display: flex;
