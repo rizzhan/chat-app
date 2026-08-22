@@ -2723,7 +2723,7 @@ body.modal-open .chat-main {
   border: 1px solid var(--border);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-lg);
-  z-index: 30;
+  z-index: 20;
 }
 
 /* Hover bridge: the tray floats 4px above the bubble; this invisible strip
@@ -2780,13 +2780,21 @@ body.modal-open .chat-main {
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  z-index: 50;
+  z-index: 25;
   animation: slideUp var(--transition-normal) ease-out;
 }
 
 .message.own .reaction-picker {
   left: auto;
   right: 0;
+}
+
+/* When there isn't enough space above the hover tray (messages near the
+   top of the scroll container) the picker flips below so it isn't clipped
+   by the messages-area overflow. */
+.reaction-picker.below {
+  bottom: auto;
+  top: calc(100% + 6px);
 }
 
 /* ---------- Reaction chips ---------- */

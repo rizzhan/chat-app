@@ -184,6 +184,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   // Message edit / delete UI state
   const [menuOpen, setMenuOpen] = useState(null);
   const [reactionPickerFor, setReactionPickerFor] = useState(null);
+  const [reactionPickerBelow, setReactionPickerBelow] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
@@ -366,6 +367,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       }
       if (reactionPickerFor && !e.target.closest(".message-actions")) {
         setReactionPickerFor(null);
+        setReactionPickerBelow(false);
       }
       if (attachMenuOpen && !e.target.closest(".attach-wrap")) {
         setAttachMenuOpen(false);
@@ -4135,6 +4137,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                                 setReactionPickerFor(null);
                                                 return;
                                               }
+                                              const areaTop =
+                                                messagesAreaRef.current?.getBoundingClientRect()
+                                                  .top ?? 0;
+                                              const btnTop =
+                                                e.currentTarget.getBoundingClientRect().top;
+                                              // ~80px needed above the tray for the picker
+                                              setReactionPickerBelow(btnTop - areaTop < 90);
                                               setReactionPickerFor(m._id);
                                             }}
                                           >
@@ -4145,7 +4154,12 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                       <TooltipContent>Add reaction</TooltipContent>
                                     </Tooltip>
                                     {reactionPickerFor === m._id && (
-                                      <div className="reaction-picker">
+                                      <div
+                                        className={
+                                          "reaction-picker" +
+                                          (reactionPickerBelow ? " below" : "")
+                                        }
+                                      >
                                         {EMOJIS.map((e) => (
                                           <button
                                             key={e}
