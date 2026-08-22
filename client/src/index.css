@@ -2802,11 +2802,23 @@ body.modal-open .chat-main {
 .reaction-picker {
   pointer-events: auto;
 }
+.message.picker-open {
+  z-index: 100;
+  isolation: isolate;
+}
 .message.picker-open .poll-card,
 .message.picker-open .poll-option,
 .message.picker-open .poll-option:hover {
   pointer-events: none;
   transform: none !important;
+}
+/* Any other message while a picker is open should not show its hover tray */
+.messages-thread:has(.reaction-picker) .message:not(.picker-open) .message-actions {
+  display: none !important;
+}
+.messages-thread:has(.reaction-picker) .poll-option,
+.messages-thread:has(.reaction-picker) .poll-card {
+  pointer-events: none;
 }
 
 /* ---------- Reaction chips ---------- */
