@@ -1,10 +1,63 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import api from "./api";
+import api, { SERVER_URL } from "./api";
+import { motion, AnimatePresence } from "motion/react";
 
 const ChatPage = lazy(() => import("./ChatPage"));
 const AuthPage = lazy(() => import("./AuthPage"));
+
+function BootScreen({ progress, dark }) {
+  return (
+    <motion.div
+      className="app-boot"
+      initial={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <div className="boot-bg" aria-hidden>
+        <div className="boot-orb boot-orb-a" />
+        <div className="boot-orb boot-orb-b" />
+        <div className="boot-grid" />
+        <div className="boot-particles">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <span key={i} className="boot-particle" style={{ "--x": `${(i * 29) % 100}%`, "--d": `${(i * 0.9) % 5}s` }} />
+          ))}
+        </div>
+      </div>
+
+      <motion.div
+        className="boot-card"
+        initial={{ scale: 0.96, y: 10, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <div className="boot-logo-wrap">
+          <div className="boot-ring" />
+          <div className="boot-ring boot-ring-2" />
+          <div className="boot-logo">बातचीत</div>
+        </div>
+        <div className="boot-title">बातचीत</div>
+        <div className="boot-subtitle">warming up your chats…</div>
+
+        <div className="boot-bar">
+          <motion.div
+            className="boot-bar-fill"
+            initial={{ width: "0%" }}
+            animate={{ width: `${progress}%` }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+          />
+          <div className="boot-bar-glow" style={{ left: `${progress}%` }} />
+        </div>
+        <div className="boot-percent">{Math.round(progress)}%</div>
+
+        <div className="boot-dots">
+          <span /><span /><span />
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 function App() {
   const [user, setUser] = useState(() => {
@@ -23,18 +76,137 @@ function App() {
     !!localStorage.getItem("token") && !!user
   );
 
+  const [booting, setBooting] = useState(() => !!localStorage.getItem("token") && !!JSON.parse(localStorage.getItem("user") || "null"));
+  const [bootProgress, setBootProgress] = useState(0);
+
   // Apply (and remember) the light/dark theme.
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
     localStorage.setItem("theme", dark ? "dark" : "light");
   }, [dark]);
 
+  // Boot sequence — preload fonts + user + conversations + avatars so pfp never flashes
+  useEffect(() => {
+    if (!booting) return;
+    let cancelled = false;
+    const bump = (v) => !cancelled && setBootProgress((p) => Math.max(p, v));
+
+    (async () => {
+      try {
+        bump(10);
+        // 1. fonts
+        try {
+          await document.fonts?.ready;
+        } catch {}
+        bump(25);
+
+        const token = localStorage.getItem("token");
+        if (!token) {
+          bump(100);
+          setTimeout(() => !cancelled && setBooting(false), 400);
+          return;
+        }
+
+        // 2. reconcile user (fixes stale avatar/incognito)
+        let freshUser = null;
+        try {
+          const cached = JSON.parse(localStorage.getItem("user") || "null");
+          const decodeJwtId = (t) => {
+            try {
+              const payload = t.split(".")[1];
+              const json = decodeURIComponent(escape(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))));
+              return JSON.parse(json).id || null;
+            } catch { return null; }
+          };
+          const tokenId = decodeJwtId(token);
+          if (tokenId) {
+            const res = await api.get(`/users/${tokenId}`);
+            freshUser = { ...res.data, id: res.data._id };
+            const cachedStr = JSON.stringify(cached);
+            const freshStr = JSON.stringify(freshUser);
+            if (cachedStr !== freshStr) {
+              setUser(freshUser);
+              localStorage.setItem("user", JSON.stringify(freshUser));
+            }
+          } else {
+            freshUser = cached;
+          }
+        } catch {
+          localStorage.removeItem("token");
+          localStorage.removeItem("user");
+          setUser(null);
+          setLoggedIn(false);
+          bump(100);
+          setTimeout(() => !cancelled && setBooting(false), 300);
+          return;
+        }
+        bump(50);
+
+        // 3. conversations (for avatars)
+        let convs = [];
+        try {
+          const r = await api.get("/conversations");
+          convs = Array.isArray(r.data) ? r.data : [];
+        } catch {}
+        bump(70);
+
+        // 4. preload avatar images
+        const urls = new Set();
+        const addUrl = (p) => {
+          if (!p) return;
+          const u = p.startsWith("http") ? p : SERVER_URL + p;
+          urls.add(u);
+        };
+        if (freshUser?.avatar) addUrl(freshUser.avatar);
+        convs.forEach((c) => {
+          if (c.avatar) addUrl(c.avatar);
+          (c.participants || []).forEach((pt) => pt.avatar && addUrl(pt.avatar));
+        });
+        // also preload small UI assets (favicon etc) optional
+
+        const preload = (src) =>
+          new Promise((res) => {
+            const img = new Image();
+            let done = false;
+            const finish = () => {
+              if (!done) {
+                done = true;
+                res();
+              }
+            };
+            img.onload = finish;
+            img.onerror = finish;
+            img.src = src;
+            // fallback timeout so boot never hangs
+            setTimeout(finish, 1200);
+          });
+
+        await Promise.all([...urls].map(preload));
+        // tiny extra to let images decode
+        await new Promise((r) => setTimeout(r, 250));
+        bump(100);
+        setTimeout(() => !cancelled && setBooting(false), 500);
+      } catch {
+        bump(100);
+        setTimeout(() => !cancelled && setBooting(false), 400);
+      }
+    })();
+
+    const safety = setTimeout(() => !cancelled && setBooting(false), 3500);
+    return () => {
+      cancelled = true;
+      clearTimeout(safety);
+    };
+  }, [booting]);
+
   // Reconcile the cached user with the token on startup. The token's id is
   // authoritative; if localStorage.user is stale (old account id, deleted and
   // recreated account, DB switch), every "is this me?" check breaks and chats
   // can even appear as if you're talking to yourself. Align them on load, or
   // drop the session if the token's account no longer exists.
+  // (Now handled by boot sequence; this keeps a live sync for tab switches)
   useEffect(() => {
+    if (booting) return;
     const token = localStorage.getItem("token");
     if (!token) return;
 
@@ -67,9 +239,6 @@ function App() {
       .get(`/users/${tokenId}`)
       .then((res) => {
         const normalized = { ...res.data, id: res.data._id };
-        // Always sync — fixes stale avatar/status after the profile was
-        // updated in another tab or the cached user is from an incognito
-        // session that never saw the upload.
         const cachedStr = JSON.stringify(cached);
         const freshStr = JSON.stringify(normalized);
         if (cachedStr !== freshStr) {
@@ -83,7 +252,7 @@ function App() {
         setUser(null);
         setLoggedIn(false);
       });
-  }, []);
+  }, [booting]);
 
   // If the token expires while using the app, the api helper fires
   // an "auth-error" event and we show the login screen again.
@@ -91,6 +260,7 @@ function App() {
     const handleAuthError = () => {
       setUser(null);
       setLoggedIn(false);
+      setBooting(false);
     };
 
     window.addEventListener("auth-error", handleAuthError);
@@ -100,6 +270,8 @@ function App() {
   const handleAuth = (user) => {
     setUser(user);
     setLoggedIn(true);
+    setBootProgress(0);
+    setBooting(true);
   };
 
   const handleLogout = () => {
@@ -107,12 +279,10 @@ function App() {
     localStorage.removeItem("user");
     setUser(null);
     setLoggedIn(false);
+    setBooting(false);
   };
 
   const handleUpdateUser = (newUser) => {
-    // /users/avatar and PATCH /users/me return a raw Mongoose doc with `_id`
-    // (no `id`), while the rest of the app expects `user.id`. Normalize here
-    // so the whole UI keeps working after a profile/photo update.
     const normalized = { ...newUser, id: newUser.id || newUser._id };
     setUser(normalized);
     localStorage.setItem("user", JSON.stringify(normalized));
@@ -120,33 +290,39 @@ function App() {
 
   return (
     <TooltipProvider>
-      {loggedIn ? (
-        <Suspense
-          fallback={
-            <div className="app-loading">
-              <div className="app-loading-title">बातचीत</div>
-            </div>
-          }
-        >
-          <ChatPage
-            user={user}
-            onLogout={handleLogout}
-            onUpdateUser={handleUpdateUser}
-            dark={dark}
-            onToggleTheme={() => setDark((d) => !d)}
-          />
-        </Suspense>
-      ) : (
-        <Suspense
-          fallback={
-            <div className="app-loading">
-              <div className="app-loading-title">बातचीत</div>
-            </div>
-          }
-        >
-          <AuthPage onAuth={handleAuth} dark={dark} onToggleTheme={() => setDark((d) => !d)} />
-        </Suspense>
-      )}
+      <AnimatePresence mode="wait">
+        {booting ? (
+          <BootScreen key="boot" progress={bootProgress} dark={dark} />
+        ) : loggedIn ? (
+          <Suspense
+            key="chat"
+            fallback={
+              <div className="app-loading">
+                <div className="app-loading-title">बातचीत</div>
+              </div>
+            }
+          >
+            <ChatPage
+              user={user}
+              onLogout={handleLogout}
+              onUpdateUser={handleUpdateUser}
+              dark={dark}
+              onToggleTheme={() => setDark((d) => !d)}
+            />
+          </Suspense>
+        ) : (
+          <Suspense
+            key="auth"
+            fallback={
+              <div className="app-loading">
+                <div className="app-loading-title">बातचीत</div>
+              </div>
+            }
+          >
+            <AuthPage onAuth={handleAuth} dark={dark} onToggleTheme={() => setDark((d) => !d)} />
+          </Suspense>
+        )}
+      </AnimatePresence>
       <Toaster position="bottom-right" richColors closeButton />
     </TooltipProvider>
   );

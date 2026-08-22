@@ -410,7 +410,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   useEffect(() => {
     const token = localStorage.getItem("token");
 
-    const newSocket = io("http://localhost:5000", {
+    const newSocket = io(SERVER_URL, {
       auth: { token },
     });
 
