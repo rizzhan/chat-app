@@ -2817,6 +2817,7 @@ body.modal-open .chat-main {
   transform: none !important;
   z-index: 0 !important;
 }
+.message.picker-open .poll-option-text,
 .message.picker-open .poll-option-meta {
   z-index: 0 !important;
   opacity: 0 !important;
