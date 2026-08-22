@@ -450,7 +450,7 @@ input {
   height: 100vh;
   overflow: hidden;
   gap: 10px;
-  padding: 10px;
+  padding: 0 10px 10px 10px;
   background: var(--bg);
   box-sizing: border-box;
 }
@@ -462,7 +462,8 @@ input {
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
   border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-  border-radius: var(--radius-xl);
+  border-top: none;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -478,7 +479,7 @@ input {
   background: color-mix(in srgb, var(--panel) 60%, transparent);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
-  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  border-radius: 0;
 }
 
 .app-logo {
@@ -1428,7 +1429,8 @@ body.modal-open .chat-main {
     radial-gradient(ellipse at 10% 100%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 50%);
   min-width: 0;
   border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-  border-radius: var(--radius-xl);
+  border-top: none;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
   overflow: hidden;
 }
 
@@ -1443,7 +1445,7 @@ body.modal-open .chat-main {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
   min-height: 64px;
   z-index: 5;
-  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  border-radius: 0;
 }
 
 .chat-header-info {
