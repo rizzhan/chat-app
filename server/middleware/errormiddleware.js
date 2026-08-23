@@ -1,7 +1,7 @@
 // 404 handler for routes that don't exist
 const notFound = (req, res, next) => {
   res.status(404).json({
-    message: `Route not found: ${req.method} ${req.originalUrl}`,
+    message: "Route not found",
   });
 };
 
@@ -33,7 +33,7 @@ const errorHandler = (err, req, res, next) => {
 
   res.status(statusCode).json({
     message,
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+    ...(process.env.NODE_ENV === "local" && { stack: err.stack }),
   });
 };
 

@@ -13,8 +13,10 @@ import {
   Plus,
   Users,
   UserPlus,
+  UserMinus,
   Pin,
   MoreHorizontal,
+  ChevronDown,
   Reply,
   Lock,
   LogOut,
@@ -180,6 +182,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const [unreadMap, setUnreadMap] = useState({});
   const [typingByConv, setTypingByConv] = useState({});
   const [atBottom, setAtBottom] = useState(true);
+  const [emptyTilt, setEmptyTilt] = useState({ x: 0, y: 0 });
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [confetti, setConfetti] = useState([]);
+  const [pyramidSpot, setPyramidSpot] = useState({ x: 50, y: 42 });
+  const [hoveredDot, setHoveredDot] = useState(null);
+  const [isBouncing, setIsBouncing] = useState(false);
+  const [flashAll, setFlashAll] = useState(false);
+  const [showConstellation, setShowConstellation] = useState(false);
+  const [hearts, setHearts] = useState([]);
 
   // Message edit / delete UI state
   const [menuOpen, setMenuOpen] = useState(null);
@@ -234,6 +245,9 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState(null);
+  const [confirmRemoveFriend, setConfirmRemoveFriend] = useState(null);
+  const [confirmRemoveMember, setConfirmRemoveMember] = useState(null);
+  const [confirmTransferOwnership, setConfirmTransferOwnership] = useState(null);
   const [confirmLeaveGroup, setConfirmLeaveGroup] = useState(null);
   const [renameConv, setRenameConv] = useState(null);
   const [renameName, setRenameName] = useState("");
@@ -664,6 +678,13 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       }
     });
 
+    // A group's history was cleared, but the group stays in the list.
+    newSocket.on("conversation-cleared", ({ conversationId }) => {
+      if (selectedConvRef.current === conversationId) {
+        setMessages([]);
+      }
+    });
+
     // Group info changed (name, members, admins). Reload from the server.
     newSocket.on("conversation-updated", () => {
       loadConversationsRef.current?.();
@@ -694,6 +715,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       newSocket.off("message-viewed-once");
       newSocket.off("conversation-disappear");
       newSocket.off("conversation-deleted");
+      newSocket.off("conversation-cleared");
       newSocket.off("conversation-updated");
       newSocket.off("removed-from-group");
       newSocket.off("connect_error");
@@ -1000,6 +1022,18 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   const isLinkText = (t) =>
     /\bhttps?:\/\/[^\s<>]+/.test((t || "").replace(/\n/g, " "));
 
+  // Safely extract the first http(s) URL from a string.
+  // Returns null for javascript: or other protocol payloads.
+  const safeUrl = (t) => {
+    const match = (t || "").match(/\b(https?:\/\/[^\s<>]+)/);
+    if (!match) return null;
+    try {
+      const u = new URL(match[1]);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+    } catch {}
+    return null;
+  };
+
   const mediaList = useMemo(() => {
     return messages
       .filter((m) => !m.deleted && !m.viewOnce)
@@ -1016,7 +1050,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   }, [messages]);
 
   const mediaUrl = (m) =>
-    m.kind === "link" ? m.text : SERVER_URL + (m.file?.url || "");
+    m.kind === "link" ? (safeUrl(m.text) || "#") : SERVER_URL + (m.file?.url || "");
 
   const mediaTitle = (m) =>
     m.kind === "link"
@@ -1174,13 +1208,21 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     setConfirmDeleteChat(null);
     setConvMenuOpen(null);
     try {
-      await api.delete(`/conversations/${c._id}`);
-      setConversations((prev) => prev.filter((x) => x._id !== c._id));
-      if (selectedConversation === c._id) {
-        setSelectedConversation(null);
-        setMessages([]);
+      const res = await api.delete(`/conversations/${c._id}`);
+      if (res.data?.kept) {
+        // Group chats survive a "delete chat" — only the history is cleared.
+        if (selectedConversation === c._id) {
+          setMessages([]);
+        }
+        setNotice("Chat cleared");
+      } else {
+        setConversations((prev) => prev.filter((x) => x._id !== c._id));
+        if (selectedConversation === c._id) {
+          setSelectedConversation(null);
+          setMessages([]);
+        }
+        setNotice("Chat deleted");
       }
-      setNotice("Chat deleted");
     } catch (err) {
       setError(err.response?.data?.message || "Failed to delete chat");
     }
@@ -2676,6 +2718,29 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     }
   };
 
+  const isFriend = (u) => {
+    if (!u) return false;
+    const id = u._id || u.id;
+    return friends.some((f) => String(f.friend._id) === String(id));
+  };
+
+  const doRemoveFriend = async (u) => {
+    try {
+      const fid = friends.find((f) => String(f.friend._id) === String(u._id || u.id))?.friendshipId || u._id || u.id;
+      await api.delete(`/friends/${fid}`);
+      setFriends((prev) => prev.filter((f) => String(f.friend._id) !== String(u._id || u.id)));
+      setNotice(`Removed ${dn(u)} from friends`);
+      setProfileUser(null);
+      setConfirmRemoveFriend(null);
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to remove friend");
+    }
+  };
+
+  const removeFriend = (u) => {
+    setConfirmRemoveFriend(u);
+  };
+
   // ---- Groups ----
   const openGroupModal = (mode = "create", conv = null) => {
     setGroupModalMode(mode);
@@ -2706,8 +2771,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
   };
 
   // ---- Group admin tools ----
-  const removeMember = async (conv, member) => {
-    if (!window.confirm(`Remove ${dn(member)} from the group?`)) return;
+  const doRemoveMember = async (conv, member) => {
+    setConfirmRemoveMember(null);
     try {
       await api.delete(`/conversations/${conv._id}/members/${member._id}`);
       setNotice(`${dn(member)} removed`);
@@ -2715,6 +2780,10 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     } catch (err) {
       setError(err.response?.data?.message || "Failed to remove member");
     }
+  };
+
+  const removeMember = (conv, member) => {
+    setConfirmRemoveMember({ conv, member });
   };
 
   const promoteAdmin = async (conv, member) => {
@@ -2743,13 +2812,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     }
   };
 
-  const transferOwnership = async (conv, member) => {
-    if (
-      !window.confirm(
-        `Transfer group ownership to ${dn(member)}? You will become an admin.`
-      )
-    )
-      return;
+  const doTransferOwnership = async (conv, member) => {
+    setConfirmTransferOwnership(null);
     try {
       await api.post(`/conversations/${conv._id}/transfer`, {
         userId: member._id,
@@ -2759,6 +2823,10 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     } catch (err) {
       setError(err.response?.data?.message || "Failed to transfer ownership");
     }
+  };
+
+  const transferOwnership = (conv, member) => {
+    setConfirmTransferOwnership({ conv, member });
   };
 
   const renameGroup = (conv) => {
@@ -3072,15 +3140,33 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
     }
 
     if (m.type === "file") {
+      const ext = (m.file?.name?.split(".").pop() || "FILE").toUpperCase().slice(0, 4);
+      const sizeLabel = m.file?.size
+        ? m.file.size > 1024 * 1024
+          ? `${(m.file.size / 1024 / 1024).toFixed(1)} MB`
+          : `${(m.file.size / 1024).toFixed(0)} KB`
+        : "2 MB";
       return (
-        <a
-          className="message-file"
-          href={SERVER_URL + m.file?.url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          <Paperclip size={14} /> {m.file?.name || "File"}
-        </a>
+        <div className="file-card">
+          <div className="file-icon">
+            <span className="file-ext">{ext}</span>
+          </div>
+          <div className="file-info">
+            <div className="file-name">{m.file?.name || "File"}</div>
+            <div className="file-meta">{ext} · {sizeLabel}</div>
+          </div>
+          <a
+            className="file-download"
+            href={SERVER_URL + m.file?.url}
+            target="_blank"
+            rel="noreferrer"
+            download
+            onClick={(e) => e.stopPropagation()}
+            title="Download"
+          >
+            <Download size={18} />
+          </a>
+        </div>
       );
     }
 
@@ -3584,28 +3670,102 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
       </aside>
 
       <main className={"chat-main chat-theme-" + chatTheme}>
-        <div className="chat-sparkles" aria-hidden="true">
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-          <span className="sparkle" />
-        </div>
         {!selectedConversation ? (
-          <div className="empty-state">
-            <div className="empty-state-icon"><Lock size={48} /></div>
-            <div className="empty-state-title">बातचीत</div>
-            <div className="empty-state-text">
-              Messages are end-to-end encrypted. No one outside of this chat,
-              not even बातचीत, can read or listen to them.
+          <div
+            className="empty-overlay"
+            onMouseMove={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              const x = ((e.clientX - r.left) / r.width - 0.5) * 8;
+              const y = ((e.clientY - r.top) / r.height - 0.5) * -8;
+              setEmptyTilt({ x, y });
+            }}
+            onMouseLeave={() => setEmptyTilt({ x: 0, y: 0 })}
+          >
+            <div className="empty-overlay-bg" aria-hidden style={{ transform: `translate(${emptyTilt.x * -1.2}px, ${emptyTilt.y * -1.2}px)` }} />
+            <div className="empty-overlay-grid" aria-hidden style={{ transform: `translate(${emptyTilt.x * -2}px, ${emptyTilt.y * -2}px)` }} />
+            {confetti.length > 0 && (
+              <div className="empty-confetti" aria-hidden>
+                {confetti.map((c) => (
+                  <span key={c.id} className="confetti-piece fountain" style={{ left: c.left, top: c.top, background: c.color, "--tx": `${c.tx ?? 0}px`, "--ty": `${c.ty ?? 160}px`, transform: `rotate(${c.rotate}deg)` }} />
+                ))}
+              </div>
+            )}
+            <div
+              className="empty-overlay-card"
+              style={{ transform: `perspective(900px) rotateY(${emptyTilt.x}deg) rotateX(${emptyTilt.y}deg)` }}
+            >
+              <div className="halo-wrap" aria-hidden
+                onMouseLeave={() => setPyramidSpot({ x: -100, y: -100 })}
+                onMouseMove={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  const x = ((e.clientX - r.left) / r.width) * 100;
+                  const y = ((e.clientY - r.top) / r.height) * 100;
+                  setPyramidSpot({ x, y });
+                }}
+                onClick={() => {
+                  if (dark) {
+                    if (showConstellation) return;
+                    setShowConstellation(true);
+                    setFlashAll(true);
+                    setTimeout(() => { setShowConstellation(false); setFlashAll(false); }, 1400);
+                  } else {
+                    if (hearts.length > 0) return;
+                    const newHearts = Array.from({ length: 22 }, (_, i) => ({
+                      id: Date.now() + i,
+                      left: `${49 + (Math.random() - 0.5) * 3}%`,
+                      top: `44%`,
+                      delay: Math.random() * 0.16,
+                      duration: 0.88 + Math.random() * 0.42,
+                      scale: 0.65 + Math.random() * 0.45,
+                      tx: (Math.random() - 0.5) * 160,
+                      ty: -72 - Math.random() * 54,
+                      rotate: -14 + Math.random() * 28,
+                    }));
+                    setHearts(newHearts);
+                    setTimeout(() => setHearts([]), 1300);
+                  }
+                }}
+              >
+                <div className="halo-glow" />
+                <div className={`halo-center ${isBouncing || showConstellation ? "is-bouncing" : ""}`}><Lock size={14} strokeWidth={2.2} /></div>
+                {hearts.length > 0 && (
+                  <div className="hearts-burst" aria-hidden>
+                    {hearts.map((h) => (
+                      <span key={h.id} className="heart" style={{ left: h.left, top: h.top, animationDelay: `${h.delay}s`, animationDuration: `${h.duration}s`, "--tx": `${h.tx}px`, "--ty": `${h.ty}px` }}>♥</span>
+                    ))}
+                  </div>
+                )}
+                {showConstellation && (
+                  <svg className="constellation-svg" viewBox="0 0 200 200" aria-hidden>
+                    <g className="constellation-lines" stroke="rgba(255,255,255,0.32)" strokeWidth="0.9" fill="none" strokeLinecap="round">
+                      <line x1="100" y1="25" x2="153" y2="47" /><line x1="153" y1="47" x2="175" y2="100" /><line x1="175" y1="100" x2="153" y2="153" /><line x1="153" y1="153" x2="100" y2="175" />
+                      <line x1="100" y1="175" x2="47" y2="153" /><line x1="47" y1="153" x2="25" y2="100" /><line x1="25" y1="100" x2="47" y2="47" /><line x1="47" y1="47" x2="100" y2="25" />
+                      <line x1="100" y1="25" x2="100" y2="100" /><line x1="100" y1="100" x2="100" y2="175" /><line x1="25" y1="100" x2="175" y2="100" /><line x1="47" y1="47" x2="153" y2="153" /><line x1="153" y1="47" x2="47" y2="153" />
+                    </g>
+                  </svg>
+                )}
+                <div className={`halo-ring ${flashAll || showConstellation ? "is-flashing" : ""}`}>
+                  <span className={`halo-dot ${hoveredDot===0 || flashAll ? "is-on" : ""}`} data-i="0" onMouseEnter={() => setHoveredDot(0)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===1 || flashAll ? "is-on" : ""}`} data-i="1" onMouseEnter={() => setHoveredDot(1)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===2 || flashAll ? "is-on" : ""}`} data-i="2" onMouseEnter={() => setHoveredDot(2)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===3 || flashAll ? "is-on" : ""}`} data-i="3" onMouseEnter={() => setHoveredDot(3)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===4 || flashAll ? "is-on" : ""}`} data-i="4" onMouseEnter={() => setHoveredDot(4)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===5 || flashAll ? "is-on" : ""}`} data-i="5" onMouseEnter={() => setHoveredDot(5)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===6 || flashAll ? "is-on" : ""}`} data-i="6" onMouseEnter={() => setHoveredDot(6)} onMouseLeave={() => setHoveredDot(null)} />
+                  <span className={`halo-dot ${hoveredDot===7 || flashAll ? "is-on" : ""}`} data-i="7" onMouseEnter={() => setHoveredDot(7)} onMouseLeave={() => setHoveredDot(null)} />
+                </div>
+              </div>
+              <h2 className="empty-overlay-title">बातचीत</h2>
+              <p className="empty-overlay-text">
+                Your chats are end-to-end encrypted.<br />Select a conversation to start messaging.
+              </p>
+              <div className="empty-overlay-actions">
+                <span className="empty-badge" onMouseEnter={(e) => { e.currentTarget.style.transform = "translateZ(18px) scale(1.05)"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateZ(12px) scale(1)"; }}><span className="empty-badge-dot" /> Encrypted</span>
+                <span className="empty-badge" onMouseEnter={(e) => { e.currentTarget.style.transform = "translateZ(18px) scale(1.05)"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateZ(12px) scale(1)"; }}>Private</span>
+                <span className="empty-badge" onMouseEnter={(e) => { e.currentTarget.style.transform = "translateZ(18px) scale(1.05)"; }} onMouseLeave={(e) => { e.currentTarget.style.transform = "translateZ(12px) scale(1)"; }}>Fast</span>
+              </div>
             </div>
+            <div className="empty-overlay-footer">Select a chat from the sidebar • Click the lock for a surprise</div>
           </div>
         ) : (
           (() => {
@@ -3619,6 +3779,19 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
 
             return (
               <>
+                <div className="chat-sparkles" aria-hidden="true">
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                  <span className="sparkle" />
+                </div>
                 <header className="chat-header">
                   <div
                     className={
@@ -3899,7 +4072,8 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                         isGroup &&
                         !mine &&
                         (!prev || prev.sender?._id !== m.sender?._id || newDay);
-                      const showAvatar = isGroup && !mine && groupEnd;
+                      const showAvatar = !mine && groupEnd;
+                      const showAvatarSpacer = !mine && !groupEnd;
                       return (
                         <Fragment key={m._id}>
                           {newDay && (
@@ -3925,7 +4099,17 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                               ease: [0.22, 1, 0.36, 1],
                             }}
                           >
-                            {showAvatar && <Avatar user={m.sender} small />}
+                            {showAvatar && (
+                              <button
+                                type="button"
+                                className="msg-avatar-btn"
+                                title="View profile"
+                                onClick={() => setProfileUser(m.sender)}
+                              >
+                                <Avatar user={m.sender} small />
+                              </button>
+                            )}
+                            {showAvatarSpacer && <div className="avatar-spacer" />}
                             <div className="message-body">
                               {showSender && (
                                 <div className="message-sender">
@@ -4027,7 +4211,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                                             }
                                             aria-label="Actions"
                                           >
-                                            <MoreHorizontal size={16} />
+                                            <ChevronDown size={16} />
                                           </DropdownMenuTrigger>
                                         }
                                       />
@@ -4648,8 +4832,9 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
           {() => (<>
           <h3>Delete chat?</h3>
             <div className="empty-hint">
-              This chat and all of its messages will be deleted for everyone.
-              This cannot be undone.
+              {confirmDeleteChat?.type === "group"
+                ? "All messages in this group will be cleared for everyone. The group itself will stay listed under Groups. This cannot be undone."
+                : "This chat and all of its messages will be deleted for everyone. This cannot be undone."}
             </div>
             <div className="modal-actions">
               <button
@@ -4665,6 +4850,84 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                 onClick={() => deleteChat(confirmDeleteChat)}
               >
                 Delete
+              </button>
+            </div>
+        </>
+          )}
+        </ModalShell>
+
+        <ModalShell open={confirmRemoveFriend} onClose={() => setConfirmRemoveFriend(null)} overlayClassName="modal-shell-front">
+          {() => (<>
+          <h3>Remove friend?</h3>
+            <div className="empty-hint">
+              {`Remove ${dn(confirmRemoveFriend)} from your friends? You can always add them back later.`}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="auth-button"
+                style={{ background: "var(--bg)", color: "var(--text)" }}
+                onClick={() => setConfirmRemoveFriend(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="auth-button"
+                style={{ background: "var(--danger)" }}
+                onClick={() => doRemoveFriend(confirmRemoveFriend)}
+              >
+                Remove
+              </button>
+            </div>
+        </>
+          )}
+        </ModalShell>
+
+        <ModalShell open={confirmRemoveMember} onClose={() => setConfirmRemoveMember(null)} overlayClassName="modal-shell-front">
+          {() => (<>
+          <h3>Remove member?</h3>
+            <div className="empty-hint">
+              {`Remove ${dn(confirmRemoveMember?.member)} from the group? They can be added back later.`}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="auth-button"
+                style={{ background: "var(--bg)", color: "var(--text)" }}
+                onClick={() => setConfirmRemoveMember(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="auth-button"
+                style={{ background: "var(--danger)" }}
+                onClick={() => doRemoveMember(confirmRemoveMember.conv, confirmRemoveMember.member)}
+              >
+                Remove
+              </button>
+            </div>
+        </>
+          )}
+        </ModalShell>
+
+        <ModalShell open={confirmTransferOwnership} onClose={() => setConfirmTransferOwnership(null)} overlayClassName="modal-shell-front">
+          {() => (<>
+          <h3>Transfer ownership?</h3>
+            <div className="empty-hint">
+              {`Transfer group ownership to ${dn(confirmTransferOwnership?.member)}? You will become an admin.`}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="auth-button"
+                style={{ background: "var(--bg)", color: "var(--text)" }}
+                onClick={() => setConfirmTransferOwnership(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="auth-button"
+                style={{ background: "var(--accent)" }}
+                onClick={() => doTransferOwnership(confirmTransferOwnership.conv, confirmTransferOwnership.member)}
+              >
+                Transfer
               </button>
             </div>
         </>
@@ -5291,6 +5554,15 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                   <MessageSquare size={16} /> Message
                 </button>
               )}
+              {isFriend(profileUser) && (
+                <button
+                  className="auth-button"
+                  style={{ background: "var(--surface)", color: "var(--danger)", border: "1px solid var(--border)" }}
+                  onClick={() => removeFriend(profileUser)}
+                >
+                  <UserMinus size={16} /> Remove friend
+                </button>
+              )}
               <button
                 className="auth-button"
                 style={{
@@ -5831,7 +6103,7 @@ function ChatPage({ user, onLogout, onUpdateUser, dark, onToggleTheme }) {
                           <a
                             key={m._id}
                             className="media-row"
-                            href={m.text}
+                            href={safeUrl(m.text) || "#"}
                             target="_blank"
                             rel="noreferrer"
                           >

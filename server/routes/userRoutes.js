@@ -3,6 +3,7 @@ const router = express.Router();
 
 const authMiddleware = require("../middleware/authmiddleware");
 const upload = require("../middleware/upload");
+const { uploadImageOnly } = require("../middleware/upload");
 const User = require("../models/user");
 const Friend = require("../models/friend");
 const Conversation = require("../models/conversation");
@@ -12,7 +13,7 @@ const Message = require("../models/messages");
 router.post(
   "/avatar",
   authMiddleware,
-  upload.single("file"),
+  uploadImageOnly.single("file"),
   async (req, res, next) => {
     try {
       if (!req.file) {

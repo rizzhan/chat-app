@@ -102,26 +102,40 @@ router.post("/", authMiddleware, async (req, res, next) => {
       }
     }
 
+    // Sanitize user-supplied fields to prevent mass assignment
+    const safeFile = file && file.url
+      ? {
+          url: String(file.url).slice(0, 512),
+          name: String(file.name || "").slice(0, 255),
+          size: Math.min(Math.max(Number(file.size) || 0, 0), 100 * 1024 * 1024),
+          mimeType: String(file.mimeType || "").slice(0, 127),
+        }
+      : undefined;
+
+    const safeReplyTo = replyTo ? String(replyTo).slice(0, 24) : undefined;
+    const safeDuration = Math.min(Math.max(Number(duration) || 0, 0), 86400);
+
     const message = await Message.create({
       conversationId,
       sender: req.user.id,
-      text: isPoll ? "" : trimmedText,
+      text: isPoll ? "" : trimmedText.slice(0, 4000),
       type: isTextType ? "text" : type,
-      ...(file ? { file } : {}),
-      ...(replyTo ? { replyTo } : {}),
-      ...(duration ? { duration: Number(duration) } : {}),
+      ...(safeFile ? { file: safeFile } : {}),
+      ...(safeReplyTo ? { replyTo: safeReplyTo } : {}),
+      ...(safeDuration > 0 ? { duration: safeDuration } : {}),
       ...(viewOnce ? { viewOnce: true } : {}),
       // Polls store their question/options under `poll`
       ...(isPoll
         ? {
             poll: {
-              question: (poll.question || "").trim(),
+              question: (poll.question || "").trim().slice(0, 500),
               multi: !!poll.multi,
               options: (poll.options || [])
                 .map((o) =>
-                  o && o.text ? String(o.text).trim() : ""
+                  o && o.text ? String(o.text).trim().slice(0, 200) : ""
                 )
                 .filter(Boolean)
+                .slice(0, 10)
                 .map((text) => ({ text, votes: [] })),
             },
           }
@@ -457,6 +471,9 @@ router.put("/:id/reactions", authMiddleware, async (req, res, next) => {
       return res.status(400).json({ message: "emoji is required" });
     }
 
+    // Cap emoji to prevent abuse (allow up to 8 grapheme clusters ≈ 32 bytes)
+    const safeEmoji = emoji.trim().slice(0, 32);
+
     const message = await Message.findById(req.params.id);
 
     if (!message) {
@@ -482,12 +499,12 @@ router.put("/:id/reactions", authMiddleware, async (req, res, next) => {
     );
 
     if (idx === -1) {
-      message.reactions.push({ user: req.user.id, emoji: emoji.trim() });
-    } else if (message.reactions[idx].emoji === emoji.trim()) {
+      message.reactions.push({ user: req.user.id, emoji: safeEmoji });
+    } else if (message.reactions[idx].emoji === safeEmoji) {
       // Tapping the same emoji again removes it
       message.reactions.splice(idx, 1);
     } else {
-      message.reactions[idx].emoji = emoji.trim();
+      message.reactions[idx].emoji = safeEmoji;
     }
 
     await message.save();

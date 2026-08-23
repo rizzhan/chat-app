@@ -27,6 +27,7 @@ const messageSchema = new mongoose.Schema(
             type: String,
             trim: true,
             default: "",
+            maxlength: 4000,
         },
 
         // Uploaded file information (for image/file messages)
@@ -72,7 +73,7 @@ const messageSchema = new mongoose.Schema(
                     type: mongoose.Schema.Types.ObjectId,
                     ref: "User",
                 },
-                emoji: { type: String, default: "" },
+                emoji: { type: String, default: "", maxlength: 32 },
             },
         ],
 
@@ -106,11 +107,11 @@ const messageSchema = new mongoose.Schema(
 
         // Poll data (for type "poll" messages)
         poll: {
-            question: { type: String, trim: true, default: "" },
+            question: { type: String, trim: true, default: "", maxlength: 500 },
             multi: { type: Boolean, default: false },
             options: [
                 {
-                    text: { type: String, trim: true, default: "" },
+                    text: { type: String, trim: true, default: "", maxlength: 200 },
                     votes: [
                         {
                             type: mongoose.Schema.Types.ObjectId,
@@ -143,5 +144,9 @@ const messageSchema = new mongoose.Schema(
         timestamps: true,
     }
 );
+
+// TTL index: automatically remove documents after expiresAt passes.
+// Used by disappearing-message chats to actually purge expired rows.
+messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true });
 
 module.exports = mongoose.model("Message", messageSchema);

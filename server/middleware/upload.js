@@ -22,6 +22,16 @@ const ALLOWED_MIME = new Set([
   "text/plain",
 ]);
 
+const IMAGE_MIME = new Set([
+  "image/jpeg", "image/png", "image/webp", "image/gif",
+]);
+
+const ALLOWED_EXT = new Set([
+  ".jpg",".jpeg",".png",".webp",".gif",".mp4",".webm",".mov",
+  ".mp3",".wav",".ogg",".pdf",".doc",".docx",".txt",
+]);
+const IMAGE_EXT = new Set([".jpg",".jpeg",".png",".webp",".gif"]);
+
 const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // max 10 MB per file
@@ -29,10 +39,22 @@ const upload = multer({
     if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
     // allow fallback by extension for edge mime types
     const ext = path.extname(file.originalname).toLowerCase();
-    const allowedExt = new Set([".jpg",".jpeg",".png",".webp",".gif",".mp4",".webm",".mov",".mp3",".wav",".ogg",".pdf",".doc",".docx",".txt"]);
-    if (allowedExt.has(ext)) return cb(null, true);
+    if (ALLOWED_EXT.has(ext)) return cb(null, true);
     cb(new Error(`File type not allowed: ${file.mimetype} (${ext})`));
   },
 });
 
+// Image-only uploader for avatars and group pictures (max 2 MB)
+const uploadImageOnly = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (IMAGE_MIME.has(file.mimetype)) return cb(null, true);
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (IMAGE_EXT.has(ext)) return cb(null, true);
+    cb(new Error(`Only images allowed: ${file.mimetype}`));
+  },
+});
+
 module.exports = upload;
+module.exports.uploadImageOnly = uploadImageOnly;

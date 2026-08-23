@@ -4,9 +4,11 @@ const mongoose = require("mongoose");
 
 const authMiddleware = require("../middleware/authmiddleware");
 const upload = require("../middleware/upload");
+const { uploadImageOnly } = require("../middleware/upload");
 const Conversation = require("../models/conversation");
 const Message = require("../models/messages");
 const { isBlockedPair } = require("../utils/blocked");
+const User = require("../models/user");
 const { onlineUsers, lastSeen } = require("../sockets/state");
 
 // Add online + last seen info to each participant, plus the current user's
@@ -65,21 +67,37 @@ const isParticipant = (c, id) =>
 const isAdminUser = (c, id) =>
   isOwner(c, id) || (c.admins || []).some((a) => a.toString() === String(id));
 
-// Count unread messages per conversation for a user
-const getUnreadMap = async (conversationIds, userId) => {
+// Count unread messages per conversation for a user.
+// `clearedMap` (conversationId -> Date) hides messages from before the
+// user cleared that chat, so old unread badges disappear too.
+const getUnreadMap = async (conversationIds, userId, clearedMap = {}) => {
   if (!conversationIds.length) return {};
 
   // Aggregation $match does NOT cast strings to ObjectIds, so do it manually.
   const oid = new mongoose.Types.ObjectId(userId);
 
+  const clearedEntries = Object.entries(clearedMap);
+  const base = {
+    conversationId: { $in: conversationIds },
+    sender: { $nin: [oid] },
+    readBy: { $nin: [oid] },
+  };
+
+  const match =
+    clearedEntries.length === 0
+      ? base
+      : {
+          ...base,
+          $or: conversationIds.map((cid) => {
+            const at = clearedMap[cid.toString()];
+            return at
+              ? { conversationId: cid, createdAt: { $gt: at } }
+              : { conversationId: cid };
+          }),
+        };
+
   const unread = await Message.aggregate([
-    {
-      $match: {
-        conversationId: { $in: conversationIds },
-        sender: { $nin: [oid] },
-        readBy: { $nin: [oid] },
-      },
-    },
+    { $match: match },
     { $group: { _id: "$conversationId", count: { $sum: 1 } } },
   ]);
 
@@ -156,8 +174,23 @@ router.post("/group", authMiddleware, async (req, res, next) => {
       });
     }
 
-    // Combine the creator + selected members, remove duplicates
-    const participants = [...new Set([req.user.id, ...participantIds])];
+    // Validate all member IDs are valid ObjectIds and exist as users.
+    // Remove blocked pairs.
+    const cleanIds = [...new Set(
+      participantIds.map((id) => String(id)).filter((id) => id && id.length === 24)
+    )];
+    const existingUsers = await User.find({ _id: { $in: cleanIds } }).select("_id");
+    const validSet = new Set(existingUsers.map((u) => u._id.toString()));
+    const validIds = cleanIds.filter((id) => validSet.has(id));
+
+    // Filter out blocked pairs
+    const nonBlocked = [];
+    for (const id of validIds) {
+      if (!(await isBlockedPair(req.user.id, id))) nonBlocked.push(id);
+    }
+
+    // Combine the creator + validated members, remove duplicates
+    const participants = [...new Set([req.user.id, ...nonBlocked])];
 
     if (participants.length < 2) {
       return res.status(400).json({
@@ -192,9 +225,28 @@ router.get("/", authMiddleware, async (req, res, next) => {
       .populate("lastMessage")
       .sort({ updatedAt: -1 });
 
+    // Per-user cleared marker for groups: hide the last-message preview
+    // if it was sent before the user cleared the chat.
+    const uid = req.user.id.toString();
+    const clearedMap = {};
+    conversations.forEach((c) => {
+      const entry = (c.clearedBy || []).find(
+        (x) => x.user && x.user.toString() === uid
+      );
+      if (!entry) return;
+      clearedMap[c._id.toString()] = entry.at;
+      if (
+        c.lastMessage &&
+        new Date(c.lastMessage.createdAt) <= new Date(entry.at)
+      ) {
+        c.lastMessage = null;
+      }
+    });
+
     const unreadMap = await getUnreadMap(
       conversations.map((c) => c._id),
-      req.user.id
+      req.user.id,
+      clearedMap
     );
 
     res.json(enrich(conversations, unreadMap, req.user.id));
@@ -249,6 +301,17 @@ router.post("/:conversationId/members", authMiddleware, async (req, res, next) =
 
     if (!userId) {
       return res.status(400).json({ message: "userId is required" });
+    }
+
+    // Validate the user exists
+    const targetUser = await User.findById(userId).select("_id");
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Check blocked pair
+    if (await isBlockedPair(req.user.id, userId)) {
+      return res.status(403).json({ message: "Cannot add this user" });
     }
 
     if (conversation.participants.some((p) => p.toString() === userId)) {
@@ -404,7 +467,7 @@ router.put("/:conversationId/name", authMiddleware, async (req, res, next) => {
 router.post(
   "/:conversationId/avatar",
   authMiddleware,
-  upload.single("file"),
+  uploadImageOnly.single("file"),
   async (req, res, next) => {
     try {
       if (!req.file) {
@@ -632,7 +695,9 @@ const toggleFlag = async (req, res, next, field) => {
   }
 };
 
-// Delete a conversation (and all of its messages)
+// Delete a conversation (and all of its messages).
+// Groups are never fully deleted here — "delete chat" on a group only
+// clears its message history so it stays listed under Groups.
 router.delete("/:conversationId", authMiddleware, async (req, res, next) => {
   try {
     const conversation = await Conversation.findOne({
@@ -642,6 +707,17 @@ router.delete("/:conversationId", authMiddleware, async (req, res, next) => {
 
     if (!conversation) {
       return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (conversation.type === "group") {
+      // Personal clear: only the caller stops seeing old messages.
+      const uid = req.user.id.toString();
+      conversation.clearedBy = (conversation.clearedBy || []).filter(
+        (x) => !x.user || x.user.toString() !== uid
+      );
+      conversation.clearedBy.push({ user: req.user.id, at: new Date() });
+      await conversation.save();
+      return res.json({ message: "Group chat cleared", kept: true });
     }
 
     await Message.deleteMany({ conversationId: conversation._id });

@@ -30,6 +30,14 @@ const registerUser = async (req, res, next) => {
   try {
     let { username, email, password, handle } = req.body;
 
+    // Type guard: all fields must be strings
+    if (typeof username !== "string" || typeof email !== "string" || typeof password !== "string") {
+      return res.status(400).json({ message: "All fields must be text" });
+    }
+    if (handle !== undefined && typeof handle !== "string") {
+      return res.status(400).json({ message: "Handle must be text" });
+    }
+
     // Check if all fields are filled
     if (!username || !email || !password) {
       return res.status(400).json({
@@ -129,6 +137,11 @@ const registerUser = async (req, res, next) => {
 const loginUser = async (req, res, next) => {
   try {
     const { email, password } = req.body;
+
+    // Type guard: fields must be strings
+    if (typeof email !== "string" || typeof password !== "string") {
+      return res.status(400).json({ message: "All fields must be text" });
+    }
 
     // Check if email and password are provided
     if (!email || !password) {

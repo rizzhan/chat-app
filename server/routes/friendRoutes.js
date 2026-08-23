@@ -116,4 +116,36 @@ router.post("/respond", authMiddleware, async (req, res, next) => {
   }
 });
 
+// Remove an accepted friend (friendshipId or userId)
+router.delete("/:id", authMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // Try as friendshipId first
+    let friendship = await Friend.findById(id);
+    // If not found, try as userId pair
+    if (!friendship) {
+      friendship = await Friend.findOne({
+        status: "accepted",
+        $or: [
+          { requester: req.user.id, recipient: id },
+          { requester: id, recipient: req.user.id },
+        ],
+      });
+    }
+    if (!friendship) {
+      return res.status(404).json({ message: "Friendship not found" });
+    }
+    const isParticipant =
+      friendship.requester.toString() === req.user.id ||
+      friendship.recipient.toString() === req.user.id;
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not your friend" });
+    }
+    await Friend.findByIdAndDelete(friendship._id);
+    res.json({ message: "Friend removed" });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -7,9 +7,13 @@ const { isBlockedPair } = require("../utils/blocked");
 const { onlineUsers, lastSeen } = require("./state");
 
 const initSocket = (server) => {
+  const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173,http://localhost:5174,http://localhost:3000")
+    .split(",").map(s => s.trim()).filter(Boolean);
+
   const io = new Server(server, {
     cors: {
-      origin: "*",
+      origin: allowedOrigins,
+      credentials: true,
     },
   });
 
@@ -32,6 +36,13 @@ const initSocket = (server) => {
     }
   });
 
+  // Helper: verify the user is a participant of the conversation.
+  // Returns the conversation doc if valid, or null.
+  const requireParticipant = async (conversationId, userId) => {
+    if (!conversationId) return null;
+    return Conversation.findOne({ _id: conversationId, participants: userId });
+  };
+
   // User connection
   io.on("connection", (socket) => {
     const userId = socket.data.userId;
@@ -41,14 +52,12 @@ const initSocket = (server) => {
     // Tell every client who is currently online
     io.emit("online-users", Array.from(onlineUsers.keys()));
 
-    console.log("User connected:", userId);
-
-    // Join a conversation room
-    socket.on("join-conversation", (conversationId) => {
-      if (!conversationId) return;
+    // Join a conversation room (only if the user is a participant)
+    socket.on("join-conversation", async (conversationId) => {
+      const conversation = await requireParticipant(conversationId, userId);
+      if (!conversation) return;
 
       socket.join(conversationId);
-      console.log(`User ${userId} joined conversation ${conversationId}`);
     });
 
     // User started typing in a conversation (broadcast to everyone else there)
@@ -143,24 +152,38 @@ const initSocket = (server) => {
           }
         }
 
-        // Save the message to MongoDB
+        // Save the message to MongoDB (sanitize file fields to prevent
+        // mass assignment — only url/name/size/mimeType are allowed)
+        const safeFile = file && file.url
+          ? {
+              url: String(file.url).slice(0, 512),
+              name: String(file.name || "").slice(0, 255),
+              size: Math.min(Math.max(Number(file.size) || 0, 0), 100 * 1024 * 1024),
+              mimeType: String(file.mimeType || "").slice(0, 127),
+            }
+          : undefined;
+
+        const safeReplyTo = replyTo ? String(replyTo).slice(0, 24) : undefined;
+        const safeDuration = Math.min(Math.max(Number(duration) || 0, 0), 86400);
+
         const message = await Message.create({
           conversationId,
           sender: userId,
-          text: isPoll ? "" : trimmedText,
+          text: isPoll ? "" : trimmedText.slice(0, 4000),
           type: isTextType ? "text" : type,
-          ...(file ? { file } : {}),
-          ...(replyTo ? { replyTo } : {}),
-          ...(duration ? { duration: Number(duration) } : {}),
+          ...(safeFile ? { file: safeFile } : {}),
+          ...(safeReplyTo ? { replyTo: safeReplyTo } : {}),
+          ...(safeDuration > 0 ? { duration: safeDuration } : {}),
           ...(viewOnce ? { viewOnce: true } : {}),
           ...(isPoll
             ? {
                 poll: {
-                  question: (poll.question || "").trim(),
+                  question: (poll.question || "").trim().slice(0, 500),
                   multi: !!poll.multi,
                   options: (poll.options || [])
-                    .map((o) => (o && o.text ? String(o.text).trim() : ""))
+                    .map((o) => (o && o.text ? String(o.text).trim().slice(0, 200) : ""))
                     .filter(Boolean)
+                    .slice(0, 10)
                     .map((text) => ({ text, votes: [] })),
                 },
               }
@@ -204,7 +227,8 @@ const initSocket = (server) => {
 
     // Mark messages as read in real time (when the reader is already viewing)
     socket.on("read-messages", async (conversationId) => {
-      if (!conversationId) return;
+      const conversation = await requireParticipant(conversationId, userId);
+      if (!conversation) return;
 
       try {
         const result = await Message.updateMany(
@@ -223,7 +247,7 @@ const initSocket = (server) => {
           });
         }
       } catch (error) {
-        console.error("Socket read-messages error:", error);
+        // silently ignore read-mark failures
       }
     });
 
@@ -245,8 +269,6 @@ const initSocket = (server) => {
         userId,
         lastSeen: lastSeen.get(userId),
       });
-
-      console.log("User disconnected:", userId);
     });
   });
 

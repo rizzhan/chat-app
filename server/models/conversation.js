@@ -14,12 +14,14 @@ const conversationSchema = new mongoose.Schema(
             type: String,
             trim: true,
             default: "",
+            maxlength: 64,
         },
 
         // Group picture (empty for private chats / no picture)
         avatar: {
             type: String,
             default: "",
+            maxlength: 512,
         },
 
         // Who created the group (can remove members / change admins)
@@ -75,6 +77,18 @@ const conversationSchema = new mongoose.Schema(
             },
         ],
 
+        // Per-user "delete chat" marker for groups. Messages sent before
+        // `at` are hidden ONLY for this user — everyone else keeps them.
+        clearedBy: [
+            {
+                user: {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: "User",
+                },
+                at: { type: Date, default: Date.now },
+            },
+        ],
+
         // Per-user chat theme choice (value stored next to the user id)
         themes: [
             {
@@ -104,7 +118,7 @@ const conversationSchema = new mongoose.Schema(
                     type: mongoose.Schema.Types.ObjectId,
                     ref: "User",
                 },
-                url: { type: String, default: "" },
+                url: { type: String, default: "", maxlength: 512 },
             },
         ],
 
